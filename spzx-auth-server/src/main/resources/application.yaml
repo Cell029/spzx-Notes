@@ -1,0 +1,63 @@
+#server:
+#  port: 11000
+
+spring:
+
+  datasource:
+    type: com.zaxxer.hikari.HikariDataSource
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://192.168.149.101:3306/db_spzx?characterEncoding=utf-8&useSSL=false&allowPublicKeyRetrieval=true
+    username: root
+    password: 123
+
+  application:
+    name: spzx-auth-server
+
+  config:
+    import:
+      - optional:nacos:${spring.application.name}.yaml  # 导入共享配置（常用）
+
+  cloud:
+    nacos:
+      config:
+        server-addr: 192.168.149.101:8848 # 配置中心地址
+      discovery:
+        server-addr: 192.168.149.101:8848  # 服务发现地址
+
+  data:
+    redis:
+      host: 192.168.149.101
+      port: 6379
+
+  session:
+    store-type: redis
+    timeout: 30m
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: alpha
+    groups-order: DESC
+  api-docs:
+    path: /v3/api-docs
+  group-configs:
+    - group: 'auth-server' # 这里配置默认分组
+      paths-to-match: '/**'
+      packages-to-scan: com.cell.spzx.auth_server.controller
+
+knife4j:
+  enable: true
+  setting:
+    language: zh_cn
+
+
+
+
+
+
+
+
+
+
+

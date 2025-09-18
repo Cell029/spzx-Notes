@@ -1,12 +1,13 @@
 package com.cell.model.entity.user;
 
+import com.baomidou.mybatisplus.annotation.TableName;
 import com.cell.model.entity.base.BaseEntity;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
-
 import java.util.Date;
 
 @Data
+@TableName("user_info")
 @Schema(description = "用户实体类")
 public class UserInfo extends BaseEntity {
 
