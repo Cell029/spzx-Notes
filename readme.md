@@ -804,6 +804,470 @@ private static final Logger log = Logger.getLogger(PhoneCodeServiceImpl.class.ge
 ****
 ### 2.2.2 检验手机验证码
 
+检验手机验证码就是用户在用手机号登录页面输入手机号后并点击发送验证码后，用户根据自己手机上接收到的验证码填写到登录页面，后端就会接收到它，然后对比存入 Redis 中的验证码，
+相同则让它通过登录。
 
+Controller 层：
 
+Controller 层接收前端传递来的数据，主要数据就是用户的手机号和该用户输入的验证码，因此需要扩展一下该对象，让它新增两个字段（手机号和输入的验证码）：
 
+```java
+@Data
+@Schema(description = "用户登录请求参数")
+public class UserLoginDto {
+
+    @Schema(description = "用户名")
+    private String username ;
+
+    @Schema(description = "密码")
+    private String password ;
+
+    @Schema(description = "手机号")
+    private String phone;
+
+    @Schema(description = "手机号验证码")
+    private String phoneCode;
+}
+```
+
+接着就是把该登录对象传递给 Service 层进行判断。
+
+```java
+@PostMapping("/loginWithPhoneCode")
+@Operation(summary = "用户手机验证码登录", description = "使用户手机号和手机验证码登录系统")
+public Result<LoginVo> loginWithCode(@RequestBody UserLoginDto userLoginDto, HttpSession session) {
+    Boolean loginCondition = loginService.checkLoginCount(userLoginDto);
+    // 进行登录请求
+    LoginVo loginVo = loginService.loginWithPhoneCode(userLoginDto, session);
+    if (loginVo != null) {
+        return Result.build(loginVo, ResultCodeEnum.SUCCESS.getCode(), ResultCodeEnum.SUCCESS.getMessage());
+    } else {
+        return Result.build(null, ResultCodeEnum.VALIDATE_CODE_ERROR.getCode(), ResultCodeEnum.VALIDATE_CODE_ERROR.getMessage());
+    }
+}
+```
+
+Service 层：
+
+这里先查询该用户是否存在数据库中（即是否完成注册），如果不存在那就不需要进行后续的登录操作，直接返回错误信息即可。接着就是根据手机号从 Redis 中查找对应的验证码，
+让它和用户输入的验证码进行对比，对比一致后则删除 Redis 中的数据，并生成 session。
+
+```java
+@Override
+public LoginVo loginWithPhoneCode(UserLoginDto userLoginDto, HttpSession session) {
+    String phone = userLoginDto.getPhone();
+    String phoneCode = userLoginDto.getPhoneCode();
+    // 通过手机号查询是否存在该用户
+    UserInfo userInfo = getOne(new LambdaQueryWrapper<UserInfo>().eq(UserInfo::getPhone, userLoginDto.getPhone()));
+    log.info("当前用户：" + userInfo);
+    // 只有该用户存在时（即完成了注册）再进行验证码的检验
+    if (userInfo != null) {
+        String redisPhoneCode = stringRedisTemplate.opsForValue().get(LoginConstant.LOGIN_PHONE_CODE_KEY + phone);
+        if (StrUtil.isNotEmpty(redisPhoneCode)) {
+            String[] split = redisPhoneCode.split("_");
+            // 用户输入的验证码和存入 Redis 的验证码一致
+            if (phoneCode.equals(split[0])) {
+                // 删除存在 Redis 中的验证码并生成 session
+                stringRedisTemplate.delete(LoginConstant.LOGIN_PHONE_CODE_KEY + phone);
+                session.setAttribute("userId", userInfo.getId());
+                String token = session.getId();
+                LoginVo loginVo = new LoginVo();
+                loginVo.setToken(token);
+                return loginVo;
+            }
+        }
+    }
+    return null;
+}
+```
+
+****
+### 2.3 登录次数限制
+
+为了防止一个用户恶意进行登录操作，应该限制该用户的尝试登录的次数，也就是规定一个时间，然后在这段时间内只允许进行 3 次的登录，超过这个次数直接返回错误信息，
+不执行登录的代码，以此达到限制登录的操作。
+
+Controller 层：
+
+这里的逻辑是在 Controller 层增加一个方法用来判断当前用户是否允许登录（规定时间内的尝试登录次数没超过限制），只有允许的才可以往下执行登录的代码逻辑，
+否则返回一个错误信息：登录过于频繁。
+
+```java
+@PostMapping("/loginWithPhoneCode")
+@Operation(summary = "用户手机验证码登录", description = "使用户手机号和手机验证码登录系统")
+public Result<LoginVo> loginWithCode(@RequestBody UserLoginDto userLoginDto, HttpSession session) {
+    Boolean loginCondition = loginService.checkLoginCount(userLoginDto);
+    // 规定时间内登录次数小于限制，可以登录
+    if (loginCondition) {
+        // 进行登录请求
+        LoginVo loginVo = loginService.loginWithPhoneCode(userLoginDto, session);
+        if (loginVo != null) {
+            return Result.build(loginVo, ResultCodeEnum.SUCCESS.getCode(), ResultCodeEnum.SUCCESS.getMessage());
+        } else {
+            return Result.build(null, ResultCodeEnum.VALIDATE_CODE_ERROR.getCode(), ResultCodeEnum.VALIDATE_CODE_ERROR.getMessage());
+        }
+    } else { // 规定时间内登录次数小大于限制，拒绝登录，返回登录过于频繁的提示
+        return Result.build(null, ResultCodeEnum.LOGIN_TOO_FREQUENTLY.getCode(), ResultCodeEnum.LOGIN_TOO_FREQUENTLY.getMessage());
+    }
+}
+```
+
+Service 层：
+
+该方法需要接收用户的登录信息，因为需要通过这些信息查询数据库中是否存在该用户，只有存在该用户时才进行登录次数的限制，否则也不会进入登录代码。因为当前的登录分为输入账号密码和手机号，
+而这些数据都封装在同一个实体类中，因此查询数据库时会把用户名和手机号都作为查询条件，但是以 “或” 的形式，查到数据后就可以往下执行力。把该用户的 id 作为 key 存入 Redis，
+利用 Redis 的一个自增语法，一个用户每调用一次 checkLoginCount() 方法就会执行一次自增，当自增到 3 次后，就不允许登录了，当然这里要规定时间，用 TTL 来代替，
+第一次进行自增时，也就是从 0 -> 1，此时就给该键值对设置一个过期时间，其余情况不设置。最后让存在 Redis 中的登录次数和规定的登录次数进行大小比对，小于规定次数才返回 true，
+让代码执行登录逻辑。
+
+```java
+@Override
+public Boolean checkLoginCount(UserLoginDto userLoginDto) {
+    // 根据用户名或手机号查用户信息
+    UserInfo userInfo = getOne(new LambdaQueryWrapper<UserInfo>()
+            // 当用户名不为空时作为查询条件
+            .eq(StrUtil.isNotEmpty(userLoginDto.getUsername()), UserInfo::getUsername, userLoginDto.getUsername())
+            // 当手机号不为空时作为查询条件
+            .or(StrUtil.isNotEmpty(userLoginDto.getPhone()),
+                    wrapper -> wrapper.eq(UserInfo::getPhone, userLoginDto.getPhone())));
+    if (userInfo != null) {
+        Long userId = userInfo.getId();
+        if (userId != null) {
+            String key = LoginConstant.LOGIN_LIMIT_KEY + userId;
+            // 第一次 incr 时设置过期时间
+            Long loginCount = stringRedisTemplate.opsForValue().increment(key);
+            if (loginCount != null && loginCount == 1L) {
+                // 第一次访问，设置 TTL
+                stringRedisTemplate.expire(key, LoginConstant.LOGIN_COUNT_SURVIVE_TTL, TimeUnit.SECONDS);
+            }
+            // 小于限制次数，允许继续尝试登录
+            return loginCount != null && loginCount <= LoginConstant.LOGIN_COUNT_LIMIT;
+        }
+    }
+    return false;
+}
+```
+
+通过接口文档进行测试，返回数据：
+
+```json
+{
+  "code": 204,
+  "message": "登录过于频繁，请稍后重试",
+  "data": null
+}
+```
+
+****
+### 2.4 登录页面的随机图片验证码
+
+#### 2.4.1 生成随机图片验证码
+
+在登录页面一般都会放一个随机验证码，该验证码是以图片的形式存在的，不过图片中会显示验证码的信息，也就是几个字符串。这个验证码一般是由后端生成并传递给前端的，
+因为前端代码是公开的，在浏览器可以通过开发者工具看到当前页面的代码详情，如果由前端生成的话就不够安全了，而且还得把这个验证码传递给后端，由后端进行存储，这反而更麻烦了，
+因此选择由后端直接生成并保存在 Redis 中，后续用它和用户输入的验证码进行比对。
+
+Controller 层：
+
+在用户进入登录页面时，前端会发送一个请求用来生成随机图片验证码。而上面记录了，生成的随机验证码需要存入 Redis 中，而存入 Redis 中就需要有 key，但生成随机图片验证码时，
+是用户还未进行登录的情况，也就是说不能让用户的 id 作为 key 存入 Redis 中了，只能生成一个随机字符串让它作为 key，最终返回数据时顺便该这个 key 一起返回。
+前端拿到了 key 后，在下一次的请求生成验证码时也需要携带这个 key，因为验证码的更新则必须把上一次存入的验证码删掉，只有传入了上一次验证码的 key 才能准确删除，
+避免在验证码还未超过 TTL 时的刷新会无限存入 Redis。而返回的数据除了这个 key，当然还需要把整个验证码发送给前端，因此需要封装一个实体类进行数据的返回：
+
+```java
+@Data
+@Schema(description = "验证码响应结果实体类")
+public class ValidateCodeVo {
+
+    @Schema(description = "验证码key")
+    private String codeKey ; // 验证码的key
+
+    @Schema(description = "验证码value")
+    private String codeValue ; // 图片验证码对应的字符串数据
+
+}
+```
+
+```java
+@GetMapping("/generateRandomCode")
+@Operation(summary = "生成登录页面的随机图片验证码", description = "进入登录页面时会发送一个请求，该请求让后端生成一个随机的图片验证码")
+public Result<ValidateCodeVo> generateRandomCode(@RequestParam String randomCodeKey) {
+    ValidateCodeVo validateCodeVo = randomCodeService.generateRandomCode(randomCodeKey);
+    if (validateCodeVo != null) {
+        return Result.build(validateCodeVo, ResultCodeEnum.SUCCESS.getCode(), ResultCodeEnum.SUCCESS.getMessage());
+    } else {
+        return Result.build(null, ResultCodeEnum.DATA_ERROR.getCode(), ResultCodeEnum.DATA_ERROR.getMessage());
+    }
+}
+```
+
+Service 层：
+
+在生成验证码之前需要先进行旧验证码的清除（如果前端传递了正确的 key），然后在使用 UUID 生成随机唯一的字符串作为存入 Redis 的 key。这里使用了 Hutool 来生成图片验证码，
+它是一个图片中包含一些字符串，真实需要的就是这些字符串，只不过以图片的形式会更安全，而生成图片验证码后，还可以通过 captcha.getCode() 获取到这个图片中的那些随机字符串，
+也就是把它存入 Redis 中。最后将 Redis 的 key 和整个图片验证码封装进对象传递给前端。
+
+```java
+@Service("randomCodeService")
+public class RandomCodeServiceImpl implements RandomCodeService {
+
+    @Autowired
+    private StringRedisTemplate stringRedisTemplate;
+
+    @Override
+    public ValidateCodeVo generateRandomCode(String randomCodeKey) {
+        if (randomCodeKey != null) {
+            stringRedisTemplate.delete(LoginConstant.RANDOM_CODE_KEY +  randomCodeKey);
+        }
+        // 生成唯一标识 UUID，用来充当存入 Redis 的 key
+        String uuid = UUID.randomUUID().toString().replaceAll("-", "");
+        String key = LoginConstant.RANDOM_CODE_KEY + uuid;
+        // 生成验证码图片
+        LineCaptcha captcha = CaptchaUtil.createLineCaptcha(150, 48, 4, 2); // 创建线型验证码对象（图片宽度、图片高度、验证码字符数量、干扰线数量）
+        String randomCode = captcha.getCode();// 4 位验证码的值
+        String imageBase64 = captcha.getImageBase64(); // 返回图片验证码，base64 编码方式
+        stringRedisTemplate.opsForValue().set(key, randomCode, LoginConstant.RANDOM_CODE_TTL, TimeUnit.SECONDS);
+        ValidateCodeVo validateCodeVo = new ValidateCodeVo();
+        validateCodeVo.setCodeKey(uuid);
+        validateCodeVo.setCodeValue("data:image/png;base64," + imageBase64);
+        return  validateCodeVo;
+    }
+}
+```
+
+通过接口文档进行测试，成功返回结果：
+
+```json
+{
+  "code": 200,
+  "message": "操作成功",
+  "data": {
+    "codeKey": "8c012ca37f3749a8b0d53158ef56fe51",
+    "codeValue": "data:image/png;base64,iVBORw..."
+  }
+}
+```
+
+****
+#### 2.4.2 图片验证码的校验
+
+图片验证码是在用户使用账号密码登录时才存在的，因此校验功能是在用户使用账号密码的那个接口中执行的，但该验证码也属于用户在表单中输入的数据，因此越需要把它封装进对象中，
+在原有的 UserLoginDto 中新增两个字段，一个用户输入的验证码，一个后端生成验证码时返回的 Redis 的 key：
+
+```java
+@Data
+@Schema(description = "用户登录请求参数")
+public class UserLoginDto {
+    // ...
+    
+    @Schema(description = "用户输入的随机验证码")
+    private String randomCode;
+
+    @Schema(description = "生成随机验证码时存入 Redis 中的 key")
+    private String codeKey;
+}
+```
+
+校验逻辑较为简单，直接通过 key 查找 Redis，然后拿用户输入的和存入 Redis 中的对比，对比一致才与奴性执行后续的登录操作：
+
+```java
+@Override
+public LoginVo login(UserLoginDto userLoginDto, HttpSession session) {
+    UserInfo userInfo = getOne(new LambdaQueryWrapper<UserInfo>().eq(UserInfo::getUsername, userLoginDto.getUsername()));
+    if (userInfo != null) {
+        // 校验用户输入的验证码和图片验证码是否一致
+        String redisRandomCode = stringRedisTemplate.opsForValue().get(LoginConstant.RANDOM_CODE_KEY + userLoginDto.getCodeKey());
+        if (StrUtil.isNotEmpty(redisRandomCode) && redisRandomCode.equals(userLoginDto.getRandomCode())) {
+            // 删除存入 Redis 中的图片验证码
+            stringRedisTemplate.delete(LoginConstant.RANDOM_CODE_KEY + userLoginDto.getCodeKey());
+            String password = userLoginDto.getPassword();
+            if (password.equals(userInfo.getPassword())) {
+                // 账号密码正确，把用户 id 存入 session
+                session.setAttribute("userId", userInfo.getId());
+                // 获取 sessionId 作为 token
+                String token = session.getId();
+                LoginVo loginVo = new LoginVo();
+                loginVo.setToken(token);
+                return loginVo;
+            }
+        }
+    }
+    return null;
+}
+```
+
+****
+### 2.5 登录校验
+
+在用户登录后，肯定需要把当前登录的用户信息保存起来，这里使用的是 ThreadLocal，只要当前操作处在同一请求中（线程内），就可以通过 ThreadLocal 获取到当前的用户信息。
+这里选择保存的数据是 userId，因为当时存储用户信息到 session 中时，保存的也是 userId。
+
+```java
+public class AuthContextUtil {
+    // 创建一个 ThreadLocal 对象，用来存储用户 id
+    private static final ThreadLocal<Long> threadLocal = new ThreadLocal<>();
+
+    // 定义存储数据的静态方法
+    public static void set(Long userId) {
+        threadLocal.set(userId);
+    }
+
+    // 定义获取数据的方法
+    public static Long get() {
+        return threadLocal.get() ;
+    }
+
+    // 删除数据的方法
+    public static void remove() {
+        threadLocal.remove();
+    }
+}
+```
+
+当然，要使用 ThreadLocal 存储用户信息，那就得设置请求拦截，要判断当前的请求是否携带了 session，如果没携带就不使用 ThreadLocal 存储信息，并让其跳转到登录页面，
+如果获取到了 session，那就从 session 中取出 userId，然后把它存入 ThreadLocal 中。
+
+这里需要注意的是：不需要手动为 session 更新 TTL。当前使用的是 SpringSession，当用户登录成功后会把 session 存入 Redis 中，默认的 session 的 TTL 为 30min，
+可以在配置文件中进行更改，当然 session 是支持滑动过期的，也就是说只要在 session 还未过期前访问了 session，那么它就会自动把 TTL 设置成默认时间（或手动设置的），
+而这里的登录拦截器中，在请求执行前就会先访问 session 获取到存在浏览器中的数据，也就是说，这个操作就会更新存在 Redis 中的 session。那么，只要是被设置成需要拦截的请求，
+只要访问了这些，就会触发 Spring Session 的滑动更新操作，也就不需要手动获取 sessionId 去 redis 中修改 TTL。
+
+```java
+@Component
+public class LoginUserInterceptor implements HandlerInterceptor {
+
+    // 配置 log
+    private static final Logger log = Logger.getLogger(LoginUserInterceptor.class.getName());
+
+    @Autowired
+    private StringRedisTemplate stringRedisTemplate;
+
+    @Override
+    public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
+        Long userId = (Long) request.getSession().getAttribute("userId");
+        if (userId != null) {
+            log.info("获取到用户 id：" + userId);
+            AuthContextUtil.set(userId);
+            return true;
+        } else {
+            log.log(Level.SEVERE,"未登录，请先完成登录操作！");
+            response.sendRedirect("http://192.168.149.101:11000/login.html");
+            return false;
+        }
+    }
+
+    @Override
+    public void afterCompletion(HttpServletRequest request, HttpServletResponse response, Object handler, Exception ex) throws Exception {
+        AuthContextUtil.remove();  // 当请求执行完后移除 ThreadLocal 中的数据
+    }
+}
+```
+
+既然配置了拦截器，那就要把它注入到 Spring 中，然后再设置需要进行拦截的请求路径，当然登录请求的路径是不能拦截的，不然连登录操作都不能进行就会进入死循环。
+
+```java
+@Configuration
+public class WebMvcConfiguration implements WebMvcConfigurer {
+
+    @Autowired
+    private LoginUserInterceptor loginUserInterceptor;
+
+    @Override
+    public void addInterceptors(InterceptorRegistry registry) {
+        registry.addInterceptor(loginUserInterceptor)
+                .excludePathPatterns(
+                        "/doc.html",            // Knife4j doc 页面
+                        "/swagger-ui.html",     // SpringDoc UI 页面
+                        "/v3/api-docs/**",      // JSON 文档接口
+                        "/swagger-ui/**",       // SpringDoc 静态资源
+                        "/webjars/**",          // webjars 静态资源
+                        "/auth-server/loginWithPhoneCode",
+                        "/auth-server/generatePhoneCode",
+                        "/auth-server/login",
+                        "/auth-server/generateRandomCode"
+                )
+                .addPathPatterns("/**");
+    }
+}
+```
+
+当然可以把这些不需要进行拦截的路径写入配置文件中，让这个配置类动态的扫描，通过 @ConfigurationProperties 把配置文件里以 spzx.auth 开头的配置，
+自动绑定到 Java 对象的属性上，这里 noAuthUrls 是 List<String>，所以配置文件里的多行 url 会自动转换成列表，不过需要配合 @EnableConfigurationProperties() 使用，
+Spring 会在启动时扫描配置文件，扫到了 @EnableConfigurationProperties 标注的那个类，就会加载那个类，然后把对应前缀的值注入到 Bean 的属性里。
+
+```java
+@Data
+@ConfigurationProperties(prefix = "spzx.auth")
+public class AuthUrlProperties {
+    private List<String> noAuthUrls;
+}
+```
+
+```yaml
+spzx:
+  auth:
+    noAuthUrls:
+      - /doc.html            # Knife4j doc 页面
+      - /swagger-ui.html     # SpringDoc UI 页面
+      - /v3/api-docs/**      # JSON 文档接口
+      - /swagger-ui/**       # SpringDoc 静态资源
+      - /webjars/**          # webjars 静态资源
+      - /auth-server/loginWithPhoneCode
+      - /auth-server/generatePhoneCode
+      - /auth-server/login
+      - /auth-server/generateRandomCode
+```
+
+```java
+@Configuration
+@EnableConfigurationProperties(value = {AuthUrlProperties.class})
+public class WebMvcConfiguration implements WebMvcConfigurer {
+
+    @Autowired
+    private LoginUserInterceptor loginUserInterceptor;
+    @Autowired
+    private AuthUrlProperties authUrlProperties;
+
+    @Override
+    public void addInterceptors(InterceptorRegistry registry) {
+        registry.addInterceptor(loginUserInterceptor)
+                .excludePathPatterns(authUrlProperties.getNoAuthUrls())
+                .addPathPatterns("/**");
+    }
+}
+```
+
+以上配置都是写在 spzx-common 模块里的，而本项目是多模块分开写的，也就是说，这些 Bean 想要在项目加载时就被扫描到并加载到 Spring 中，就需要能被 Spring 扫描到，
+而 spzx-common 本身是个不带启动类的配置模块，要让它被 Spring 扫描到，就需要添加启动类，有了启动类就可以在项目启动时自动让 Spring 扫描到这些 Bean（默认扫描启动类所在包及其子包），
+但是在 spzx-common 中添加启动类是不合适的，因此只能从需要使用它的那些模块中入手，在它们的启动类上扫描到 spzx-common 中的 Bean，可是它们不在一个模块，
+怎么能扫描到？因此需要引入 spzx-common 作为这些模块的依赖，当启动类上添加了 @SpringBootApplication(scanBasePackages = {"com.cell"})，
+它就能扫描到了。因为 Maven 会把 spzx-common 编译后的 classes 加入到 auth-server 的 classpath，当规定的扫描包为 com.cell 时，
+它就会扫描 com.cell 下的所有子模块，包括 com.cell.spzx.common 包下的 @Configuration、@Component 等 Bean。当然这是包名一致的情况下才可以这样写，
+确保 common 和 auth-server 都能被扫描到，如果 common 包的包名为 com.lasdfjlk.aslf.common，那么就得单独写上这个包名才能被扫描到。
+
+```text
+spzx-common // 公共配置模块，不带启动类
+    └─ com.cell.spzx.common
+        ├─ config
+        │   └─ WebMvcConfiguration.java
+        └─ interceptor
+            └─ LoginUserInterceptor.java
+
+auth-server // 实际启动服务模块
+    └─ com.cell.spzx.auth_server
+        └─ AuthServerApplication.java
+```
+
+1. 启动类所在模块：spzx-auth-server
+2. 默认扫描包：com.cell.auth（启动类所在包及其子包）
+3. 扩展扫描：scanBasePackages = {"com.cell"} -> 扫描整个com.cell包
+4. 发现：com.cell.common.properties.AuthUrlProperties
+
+```text
+spzx-auth-server 依赖 spzx-common
+编译时：common 模块的 class 文件会被打包到 auth-server 中
+运行时：JVM 能看到 common 模块中的所有类
+扫描时：Spring 能扫描到 com.cell 包下的所有类
+```
+
+****

@@ -5,8 +5,11 @@ import com.cell.model.dto.system.LoginDto;
 import com.cell.model.vo.common.Result;
 import com.cell.model.vo.common.ResultCodeEnum;
 import com.cell.model.vo.system.LoginVo;
+import com.cell.model.vo.system.RandomCodeVo;
+import com.cell.model.vo.system.ValidateCodeVo;
 import com.cell.spzx.auth_server.service.LoginService;
 import com.cell.spzx.auth_server.service.PhoneCodeService;
+import com.cell.spzx.auth_server.service.RandomCodeService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpSession;
@@ -14,7 +17,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Controller;
 import org.springframework.web.bind.annotation.*;
 
-@RestController("/auth-server")
+@RestController
+@RequestMapping("/auth-server")
 @Tag(name = "LoginController", description = "登录相关接口")
 public class LoginController {
 
@@ -22,15 +26,22 @@ public class LoginController {
     private LoginService loginService;
     @Autowired
     private PhoneCodeService phoneCodeService;
+    @Autowired
+    private RandomCodeService randomCodeService;
 
     @PostMapping("/login")
     @Operation(summary = "用户登录", description = "使用用户名和密码登录系统")
     public Result<LoginVo> login(@RequestBody UserLoginDto userLoginDto, HttpSession session) {
-        LoginVo loginVo = loginService.login(userLoginDto, session);
-        if (loginVo != null) {
-            return Result.build(loginVo, ResultCodeEnum.SUCCESS.getCode(), ResultCodeEnum.SUCCESS.getMessage());
+        Boolean loginCondition = loginService.checkLoginCount(userLoginDto);
+        if (loginCondition) {
+            LoginVo loginVo = loginService.login(userLoginDto, session);
+            if (loginVo != null) {
+                return Result.build(loginVo, ResultCodeEnum.SUCCESS.getCode(), ResultCodeEnum.SUCCESS.getMessage());
+            } else {
+                return Result.build(null, ResultCodeEnum.LOGIN_ERROR.getCode(), ResultCodeEnum.LOGIN_ERROR.getMessage());
+            }
         } else {
-            return Result.build(null, ResultCodeEnum.LOGIN_ERROR.getCode(), ResultCodeEnum.LOGIN_ERROR.getMessage());
+            return Result.build(null, ResultCodeEnum.LOGIN_TOO_FREQUENTLY.getCode(), ResultCodeEnum.LOGIN_TOO_FREQUENTLY.getMessage());
         }
     }
 
@@ -45,10 +56,33 @@ public class LoginController {
         }
     }
 
-    /*@PostMapping("/loginWithPhoneCode")
-    @Operation(summary = "用户登录", description = "使用户手机号和手机验证码登录系统")
-    public Result<LoginVo> loginWithCode(@RequestBody , HttpSession session) {
-        loginService.loginWithPhoneCode()
-    }*/
+    @PostMapping("/loginWithPhoneCode")
+    @Operation(summary = "用户手机验证码登录", description = "使用户手机号和手机验证码登录系统")
+    public Result<LoginVo> loginWithCode(@RequestBody UserLoginDto userLoginDto, HttpSession session) {
+        Boolean loginCondition = loginService.checkLoginCount(userLoginDto);
+        // 规定时间内登录次数小于限制，可以登录
+        if (loginCondition) {
+            // 进行登录请求
+            LoginVo loginVo = loginService.loginWithPhoneCode(userLoginDto, session);
+            if (loginVo != null) {
+                return Result.build(loginVo, ResultCodeEnum.SUCCESS.getCode(), ResultCodeEnum.SUCCESS.getMessage());
+            } else {
+                return Result.build(null, ResultCodeEnum.VALIDATE_CODE_ERROR.getCode(), ResultCodeEnum.VALIDATE_CODE_ERROR.getMessage());
+            }
+        } else { // 规定时间内登录次数小大于限制，拒绝登录，返回登录过于频繁的提示
+            return Result.build(null, ResultCodeEnum.LOGIN_TOO_FREQUENTLY.getCode(), ResultCodeEnum.LOGIN_TOO_FREQUENTLY.getMessage());
+        }
+    }
+
+    @GetMapping("/generateRandomCode")
+    @Operation(summary = "生成登录页面的随机图片验证码", description = "进入登录页面时会发送一个请求，该请求让后端生成一个随机的图片验证码")
+    public Result<ValidateCodeVo> generateRandomCode(@RequestParam String randomCodeKey) {
+        ValidateCodeVo validateCodeVo = randomCodeService.generateRandomCode(randomCodeKey);
+        if (validateCodeVo != null) {
+            return Result.build(validateCodeVo, ResultCodeEnum.SUCCESS.getCode(), ResultCodeEnum.SUCCESS.getMessage());
+        } else {
+            return Result.build(null, ResultCodeEnum.DATA_ERROR.getCode(), ResultCodeEnum.DATA_ERROR.getMessage());
+        }
+    }
 
 }

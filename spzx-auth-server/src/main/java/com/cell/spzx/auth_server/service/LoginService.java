@@ -8,6 +8,10 @@ import com.cell.model.vo.system.LoginVo;
 import jakarta.servlet.http.HttpSession;
 
 public interface LoginService extends IService<UserInfo> {
+
     LoginVo login(UserLoginDto userLoginDto, HttpSession session);
 
+    LoginVo loginWithPhoneCode(UserLoginDto userLoginDto, HttpSession session);
+
+    Boolean checkLoginCount(UserLoginDto userLoginDto);
 }
