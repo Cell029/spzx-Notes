@@ -3,6 +3,7 @@ package com.cell.spzx.common.interceptor;
 import com.cell.spzx.common.utils.AuthContextUtil;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.http.HttpSession;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
@@ -22,7 +23,12 @@ public class LoginUserInterceptor implements HandlerInterceptor {
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
-        Long userId = (Long) request.getSession().getAttribute("userId");
+        String requestUri = request.getRequestURI();
+        log.info("拦截到请求: " + requestUri);
+        // Long userId = (Long) request.getSession().getAttribute("userId");
+        HttpSession session = request.getSession(false); // 不创建新 session
+        Long userId = (session == null ? null : (Long) session.getAttribute("userId"));
+
         if (userId != null) {
             log.info("获取到用户 id：" + userId);
             AuthContextUtil.set(userId);

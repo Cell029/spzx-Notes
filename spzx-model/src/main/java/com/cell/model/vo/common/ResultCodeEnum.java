@@ -10,6 +10,7 @@ public enum ResultCodeEnum {
     VALIDATE_CODE_ERROR(202, "手机号或验证码错误"),
     PHONE_CODE_IS_EXISTS(203, "验证码已发送，请勿重复点击获取"),
     LOGIN_TOO_FREQUENTLY(204, "登录过于频繁，请稍后重试"),
+    USER_ALREADY_EXIST(205, "用户已存在！"),
     LOGIN_AUTH(208, "用户未登录"),
     USER_NAME_IS_EXISTS(209, "用户名已经存在"),
     SYSTEM_ERROR(9999, "您的网络有问题请稍后重试"),

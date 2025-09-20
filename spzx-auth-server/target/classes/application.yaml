@@ -59,10 +59,16 @@ spzx:
       - /v3/api-docs/**      # JSON 文档接口
       - /swagger-ui/**       # SpringDoc 静态资源
       - /webjars/**          # webjars 静态资源
-      - /auth-server/loginWithPhoneCode
-      - /auth-server/generatePhoneCode
-      - /auth-server/login
-      - /auth-server/generateRandomCode
+      - /favicon.ico         # 点击接口进入文档页面去加载接口信息，同时浏览器也自动请求 /favicon.ico
+      - /error
+      - /auth-server/login/loginWithPhoneCode
+      - /auth-server/login/generatePhoneCode
+      - /auth-server/login/login
+      - /auth-server/login/generateRandomCode
+      - /auth-server/login/loginOut # 退出登录接口
+      #- /api/userinfo # 获取用户信息接口
+      - /auth-server/register/register # 注册接口
+      - /auth-server/login/ip
 
 
 

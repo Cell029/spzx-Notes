@@ -5,13 +5,16 @@ import com.cell.model.dto.h5.UserLoginDto;
 import com.cell.model.dto.system.LoginDto;
 import com.cell.model.entity.user.UserInfo;
 import com.cell.model.vo.system.LoginVo;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
 
 public interface LoginService extends IService<UserInfo> {
 
-    LoginVo login(UserLoginDto userLoginDto, HttpSession session);
+    LoginVo login(UserLoginDto userLoginDto, HttpServletRequest request);
 
-    LoginVo loginWithPhoneCode(UserLoginDto userLoginDto, HttpSession session);
+    LoginVo loginWithPhoneCode(UserLoginDto userLoginDto, HttpServletRequest request);
 
-    Boolean checkLoginCount(UserLoginDto userLoginDto);
+    Boolean checkLoginCount(UserLoginDto userLoginDto, HttpServletRequest request);
+
+    void loginOut(HttpServletRequest request);
 }

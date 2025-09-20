@@ -13,6 +13,9 @@ public class UserRegisterDto {
     @Schema(description = "密码")
     private String password;
 
+    @Schema(description = "电话号码")
+    private String phone;
+
     @Schema(description = "昵称")
     private String nickName;
 

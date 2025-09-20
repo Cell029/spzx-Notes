@@ -12,6 +12,7 @@ public class LoginConstant {
      * 登录次数校验相关
      */
     public static final String LOGIN_LIMIT_KEY = "login:limit:";
+    public static final String LOGIN_LIMIT_IP_KEY = "login:ip:limit:"; // 限制 IP
     public static final Long LOGIN_COUNT_LIMIT = 3L; // 规定时间内允许的登录次数限制
     public static final Integer LOGIN_COUNT_SURVIVE_TTL = 60; // 规定时间
 

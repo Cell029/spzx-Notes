@@ -19,6 +19,7 @@ public class SessionConfig {
 
     @Bean
     public RedisSerializer<Object> redisSerializer() {
+        // 使用 JSON 序列化 session
         return new GenericJackson2JsonRedisSerializer();
     }
 }

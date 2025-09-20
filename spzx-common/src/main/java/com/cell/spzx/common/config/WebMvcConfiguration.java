@@ -5,6 +5,7 @@ import com.cell.spzx.common.properties.AuthUrlProperties;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.web.servlet.config.annotation.CorsRegistry;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
@@ -19,21 +20,17 @@ public class WebMvcConfiguration implements WebMvcConfigurer {
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
-        /*registry.addInterceptor(loginUserInterceptor)
-                .excludePathPatterns(
-                        "/doc.html",            // Knife4j doc 页面
-                        "/swagger-ui.html",     // SpringDoc UI 页面
-                        "/v3/api-docs/**",      // JSON 文档接口
-                        "/swagger-ui/**",       // SpringDoc 静态资源
-                        "/webjars/**",          // webjars 静态资源
-                        "/auth-server/loginWithPhoneCode",
-                        "/auth-server/generatePhoneCode",
-                        "/auth-server/login",
-                        "/auth-server/generateRandomCode"
-                        )
-                .addPathPatterns("/**");*/
         registry.addInterceptor(loginUserInterceptor)
                 .excludePathPatterns(authUrlProperties.getNoAuthUrls())
                 .addPathPatterns("/**");
+    }
+
+    @Override
+    public void addCorsMappings(CorsRegistry registry) {
+        registry.addMapping("/**")   // 添加路径规则
+                .allowCredentials(true)         // 是否允许在跨域的情况下传递Cookie
+                .allowedOriginPatterns("*")     // 允许请求来源的域规则
+                .allowedMethods("*")
+                .allowedHeaders("*") ;          // 允许所有的请求头
     }
 }

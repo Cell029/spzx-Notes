@@ -1144,7 +1144,8 @@ public class LoginUserInterceptor implements HandlerInterceptor {
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
-        Long userId = (Long) request.getSession().getAttribute("userId");
+        HttpSession session = request.getSession(false); // 不创建新 session
+        Long userId = session == null ? null : (Long) session.getAttribute("userId");
         if (userId != null) {
             log.info("获取到用户 id：" + userId);
             AuthContextUtil.set(userId);
@@ -1162,6 +1163,9 @@ public class LoginUserInterceptor implements HandlerInterceptor {
     }
 }
 ```
+
+需要注意的是：getSession() 会在 session 不存在时创建 session，也就是说，只要是被拦截到的请求，如果直接调用 getSession() 它就会生成一个 session 保存到 Redis 中，
+这是不合理的，因此需要使用 request.getSession(false)，它在没获取到 session 时不会创建新的 session，这样可以保证被拦截的请求不会产生另外的 session。
 
 既然配置了拦截器，那就要把它注入到 Spring 中，然后再设置需要进行拦截的请求路径，当然登录请求的路径是不能拦截的，不然连登录操作都不能进行就会进入死循环。
 
@@ -1270,4 +1274,436 @@ spzx-auth-server 依赖 spzx-common
 扫描时：Spring 能扫描到 com.cell 包下的所有类
 ```
 
+经过测试，发现在 http://localhost:11000/doc.html 接口文档页面，只要点击了任意一个接口（未点击测试按钮），它在页面会展示该接口的相关信息，但此时后端也会打印 “未登录”，
+也就是说这个查看接口详情被拦截器拦截到了，很奇怪，明明上面已经配置好了 swagger 相关的页面都进行放行操作。于是在拦截器中添加打印被拦截的请求的代码：
+
+```java
+String requestUri = request.getRequestURI();
+log.info("拦截到请求: " + requestUri);
+```
+
+再经过测试发现，控制台打印的 “拦截到请求：/favicon.ico”，也就是说在接口文档页面会自动把图标也作为请求进行发送，那么只要在放行请求中把这个路径也添加进去即可。
+但是后续又出现类似的请求，只不过这次打印的拦截请求为 /error，因为当浏览器的请求被拦截到后，会进行 session 的校验，如果校验不通过就会跳转到登录页面，
+而当前登录页面没有完成，它就会触发 Spring 内部的错误处理，导致发送一个 /error 请求。
+
+当然，不同网页之间的请求可能存在跨域问题，因此需要添加一个配置文件，让本项目的所有请求都允许进行跨域访问：
+
+```java
+@Configuration
+@EnableConfigurationProperties(value = {AuthUrlProperties.class})
+public class WebMvcConfiguration implements WebMvcConfigurer {
+
+    @Override
+    public void addCorsMappings(CorsRegistry registry) {
+        registry.addMapping("/**")              // 添加路径规则
+                .allowCredentials(true)         // 是否允许在跨域的情况下传递 Cookie
+                .allowedOriginPatterns("*")     // 允许请求来源的域规则
+                .allowedMethods("*")
+                .allowedHeaders("*") ;          // 允许所有的请求头
+    }
+}
+```
+
 ****
+### 2.8 用户注册
+
+注册功能就是，用户在前端页面会有个表单，里面由用户填写注册的账号信息，一般包括用户名、密码、手机号等，由后端接收到这些数据后会先查询数据库该账号是否允许注册，
+即是否存在相同的用户名或手机号的用户，满足条件了才允许执行注册，也就是在数据库中插入一条用户信息。
+
+Controller 层：
+
+Controller 层接收到前端页面传递的用户填写的注册账号信息，因此需要有个传输对象来接受：
+
+```java
+@Data
+@Schema(description="注册对象")
+public class UserRegisterDto {
+
+    @Schema(description = "用户名")
+    private String username;
+
+    @Schema(description = "密码")
+    private String password;
+
+    @Schema(description = "电话号码")
+    private String phone;
+
+    @Schema(description = "昵称")
+    private String nickName;
+
+    @Schema(description = "手机验证码")
+    private String code ;
+}
+```
+
+该对象内部封装了一些字段：用户名、密码、手机号、昵称和手机验证码，这个手机验证码和登录时的手机验证码的功能一致，也是起到一个校验的功能，因此在进行注册时还需要对验证码进行判断是否一致。
+
+```java
+@RestController
+@RequestMapping("/auth-server/register")
+public class RegisterController {
+
+    @Autowired
+    private RegisterService registerService;
+
+    @PutMapping("/register")
+    @Operation(summary = "用户注册", description = "输入信息执行注册")
+    public Result<Boolean> register(@RequestBody UserRegisterDto UserRegisterDto) {
+        return registerService.register(UserRegisterDto);
+    }
+}
+```
+
+Service 层：
+
+用来进行注册操作的实体类肯定不是 UserRegisterDto，因为注册实际上是个插入数据到数据库的操作，而用户的信息统一保存在 user_info 表中，也就是说，要用对应的实体类来执行插入操作，
+并且注册时填写的数据只是一小部分，还有很多数据需要用户在登录后进行手动更新，因此插入时使用的实体类是 UserInfo，它是表 user_info 的对应实体类。
+不过 UserRegisterDto 对象中有些字段是与 UserInfo 一样的，所以可以直接使用 BeanUtils 进行拷贝，至于不一样的字段，这里只有一个手机验证码，它不需要存入数据库，
+因此不用考虑赋值给 UserInfo 的情况。
+
+在执行注册前，需要对该用户填写的账号的用户名和手机进行唯一性的判断，也就是查找数据库中是否有一样的用户名和手机号，如果有就返回对应的错误信息，这样前端获取到后也可以在页面显示。
+成功通过唯一性校验后再对手机验证码的一致性进行判断，当条件全部满足时就可以执行插入操作了，把用户提交的数据保存进表 user_info 中。
+
+```java
+@Override
+public Result<Boolean> register(UserRegisterDto userRegisterDto) {
+    UserInfo userInfo = new UserInfo();
+    BeanUtils.copyProperties(userRegisterDto, userInfo);
+
+    // 查询是否存在相同用户名或手机号的用户
+    LambdaQueryWrapper<UserInfo> wrapper = new LambdaQueryWrapper<>();
+    if (StrUtil.isNotEmpty(userInfo.getUsername())) {
+        wrapper.eq(UserInfo::getUsername, userInfo.getUsername());
+    }
+    if (StrUtil.isNotEmpty(userInfo.getPhone())) {
+        wrapper.or(w -> w.eq(UserInfo::getPhone, userInfo.getPhone()));
+    }
+
+    UserInfo checkExist = getOne(wrapper);
+    if (checkExist != null) {
+        return Result.build(false, ResultCodeEnum.USER_ALREADY_EXIST.getCode(), ResultCodeEnum.USER_ALREADY_EXIST.getMessage());
+    }
+
+    // 验证手机验证码
+    String value = stringRedisTemplate.opsForValue().get(LoginConstant.LOGIN_PHONE_CODE_KEY + userInfo.getPhone());
+    if (StrUtil.isEmpty(value)) {
+        return Result.build(false, ResultCodeEnum.VALIDATE_CODE_ERROR.getCode(), ResultCodeEnum.VALIDATE_CODE_ERROR.getMessage());
+    }
+
+    String code = value.split("_")[0];
+    if (StrUtil.isEmpty(code) || !code.equals(userRegisterDto.getCode())) {
+        return Result.build(false, ResultCodeEnum.VALIDATE_CODE_ERROR.getCode(), ResultCodeEnum.VALIDATE_CODE_ERROR.getMessage());
+    }
+
+    // 满足条件，进行注册
+    save(userInfo);
+    stringRedisTemplate.delete(LoginConstant.LOGIN_PHONE_CODE_KEY + userInfo.getPhone());
+    return Result.build(true, ResultCodeEnum.SUCCESS.getCode(), ResultCodeEnum.SUCCESS.getMessage());
+}
+```
+
+****
+### 2.7 获取用户信息
+
+当登录成功以后，此时前端会自动调用后端接口来获取登录成功以后的用户信息，然后在首页面展示。
+
+Controller 层：
+
+因为获取当前登录用户的信息是在用户登录成功后再执行的操作，也就是说，它可以通过获取到当前用户的 session 来查询用户信息，不需要由前端进行判断后传递用户 id 之类的数据，
+因为前端在发送请求时，请求头中会自动携带 session，只要能获取到这个 session 就可以获取到用户信息。
+
+```java
+@RestController
+@RequestMapping("/auth-server/user")
+public class UserController {
+
+    @Autowired
+    private UserService userService;
+
+    @GetMapping("/userInfo")
+    @Operation(summary = "获取用户信息", description = "通过 session 拿到用户 id 再查询数据库")
+        public Result<UserInfo> getUserInfo(HttpServletRequest request) {
+        UserInfo userInfo = userService.getUserInfo(request);
+        if (userInfo != null) {
+            return Result.build(userInfo, ResultCodeEnum.SUCCESS.getCode(), ResultCodeEnum.SUCCESS.getMessage());
+        } else {
+            return Result.build(null, ResultCodeEnum.LOGIN_AUTH.getCode(), ResultCodeEnum.LOGIN_AUTH.getMessage());
+        }
+    }
+}
+```
+
+Service 层：
+
+这里直接通过 HttpServletRequest 获取到 session，然后取出当时用户登录时存入 session 的 userId，接着就可以通过它查询数据库了。
+
+```java
+@Service("userService")
+public class UserServiceImpl extends ServiceImpl<UserMapper, UserInfo> implements UserService {
+    @Override
+    public UserInfo getUserInfo(HttpServletRequest request) {
+        HttpSession session = request.getSession(false);
+        if (session != null) {
+            Long userId = (Long) session.getAttribute("userId");
+            if (userId != null) {
+                return getOne(new LambdaQueryWrapper<UserInfo>().eq(UserInfo::getId, userId));
+            }
+        }
+        return null;
+    }
+}
+```
+
+****
+### 2.8 用户退出
+
+用户退出就是清除保存在 Redis 中的 session 数据，这样在访问页面功能时就会被自动拦截到，因为 session 已经被清除了。
+
+Controller 层：
+
+Controller 层要接收前端传递的 HttpServletRequest，因为 HttpSession 是绑定到当前 HTTP 请求的，每个用户访问后台接口时，浏览器会携带 Cookie，
+后端通过 HttpServletRequest.getSession() 才能获取到对应用户的 session，所以，如果想操作当前用户的 session（比如退出登录），
+必须知道哪个请求对应哪个 session，这就需要 HttpServletRequest。
+
+```java
+@GetMapping("/loginOut")
+@Operation(summary = "用户退出登录", description = "删除用户登录时生成的 session")
+public Result loginOut(HttpServletRequest request) {
+    loginService.loginOut(request);
+    return Result.build(null , ResultCodeEnum.SUCCESS) ;
+}
+```
+
+Service 层：
+
+Service 层先通过 Controller 层传递来的 HttpServletRequest 获取到 session，这里不能在未获取到 session 时创建新的，所以要加上 false，
+获取到后就执行 session.invalidate() 让 session 失效，Spring Session 会自动删除 Redis 的 session 记录，清理所有 session 属性，包括存入的 userId 等。
+
+```java
+@Override
+public void loginOut(HttpServletRequest request) {
+    HttpSession session = request.getSession(false);
+    if (session != null) {
+        log.info("用户退出，sessionId：" +  session.getId());
+        session.invalidate(); // 触发 SpringSession 删除 Redis 中的记录
+    }
+}
+```
+
+当然也可以手动获取 sessionId 去 Redis 中进行删除操作，但是当启用了 Spring Session Redis 之后，每个 session 在 Redis 中并不是简单的一条键值对，
+而是一个完整的数据结构，它的 key 为 spring:session:sessions:e0029048-13e3-48d1-995e-f291e6f1f80b，value 为：
+
+session 创建时间戳：
+
+```json
+{
+    "fields": [
+        {
+            "value": 1758334983383
+        }
+    ],
+    "annotations": [],
+    "className": "java.lang.Long",
+    "serialVersionUid": 4290774380558885855
+}
+```
+
+session TTL：
+
+```json
+{
+    "fields": [
+        {
+            "value": 1800
+        }
+    ],
+    "annotations": [],
+    "className": "java.lang.Integer",
+    "serialVersionUid": 1360826667806852920
+}
+```
+
+session 中存储的用户 id：
+
+```json
+{
+    "fields": [
+        {
+            "value": 33
+        }
+    ],
+    "annotations": [],
+    "className": "java.lang.Long",
+    "serialVersionUid": 4290774380558885855
+}
+```
+
+上次访问时间戳：
+
+```json
+{
+    "fields": [
+        {
+            "value": 1758334983383
+        }
+    ],
+    "annotations": [],
+    "className": "java.lang.Long",
+    "serialVersionUid": 4290774380558885855
+}
+```
+
+Spring Session 默认会把 HTTP session 里的所有属性都序列化存储，每个 session 属性（比如 userId、登录时间、验证码、过期时间等）都会单独作为一个对象存入 Redis。
+如果进行手动删除可能导致这些属性删除不干净，让 SpringSession 仍认为用户处于登录状态，所以还是推荐使用官方的 API 进行 session 的清除操作。
+
+****
+### 2.9 获取登录用户的 IP
+
+在 Web 应用程序中，可以通过 HttpServletRequest 对象来获取调用者的 IP 地址，HttpServletRequest 对象代表客户端的请求，其中包含了客户端的 IP 地址：
+
+```java
+@GetMapping("/ip")
+@Operation(summary = "获取用户 ip")
+public String getCallerIp(HttpServletRequest request) {
+    String ip = request.getRemoteAddr();
+    return ip;
+}
+```
+
+但这个方法获取 IP 的前提是客户端直接访问后端服务，如果项目没有经过 Nginx、负载均衡、反向代理，那么它返回的确实就是用户的真实 IP，但真是项目中肯定不是让使用者直接访问后端服务，
+中间肯定会经过各种中间件的处理，例如：
+
+```text
+用户 -> 运营商 -> CDN -> Nginx/负载均衡 -> 网关 -> 后端服务
+```
+
+这样通过 request.getRemoteAddr() 拿到的 ip 可能是代理服务的 IP，比如 Nginx 的，而不是用户的真实 IP。不过代理服务会在 HTTP Header 里加上真实的客户端 IP，比如：
+
+- X-Forwarded-For：常见的头，可能有多个 IP（经过多个代理时，每一层代理都会追加 IP），一般取第一个就是用户的真实 IP。 
+- Proxy-Client-IP、WL-Proxy-Client-IP：早期 WebLogic、Apache 一些插件写入的头。 
+- HTTP_CLIENT_IP、HTTP_X_FORWARDED_FOR：部分代理或旧系统写的。 
+- 最后才是通过 request.getRemoteAddr() 获取。
+
+所以，为了保证在各种代理或部署场景下都能拿到真实 IP，就需要写大堆兜底逻辑来获取真实的 IP：
+
+```java
+/**
+ * 获取客户端真实IP地址
+ */
+public static String getIpAddress(HttpServletRequest request) {
+    if (request == null) {
+        return null;
+    }
+    String ip = request.getHeader("X-Forwarded-For");
+    if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) {
+        // X-Forwarded-For 可能有多个IP，格式：client, proxy1, proxy2，取第一个才是真实 IP
+        int index = ip.indexOf(',');
+        if (index != -1) {
+            return ip.substring(0, index).trim();
+        } else {
+            return ip.trim();
+        }
+    }
+
+    ip = request.getHeader("Proxy-Client-IP");
+    // 先判断这个 IP 是否有效
+    if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) return ip;
+
+    ip = request.getHeader("WL-Proxy-Client-IP");
+    if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) return ip;
+
+    ip = request.getHeader("HTTP_CLIENT_IP");
+    if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) return ip;
+
+    ip = request.getHeader("HTTP_X_FORWARDED_FOR");
+    if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) return ip;
+
+    // 最后执行
+    ip = request.getRemoteAddr();
+    return ip;
+}
+```
+
+在返回 IP 前需要对从请求头中取出的 IP 判断其是否有效，因为很多时候从 request.getHeader("X-Forwarded-For") 这些地方取出来的值可能是：
+
+- null：表示根本没有设置这个头
+- ""（空字符串）：有的代理服务器会加一个空的 header
+- "unknown"：某些代理或中间件会返回这个字符串来代表“未知 IP”
+
+而这些情况都不能直接当成真实 IP 来用，所以要先过滤掉，只有通过了这几个条件，才说明这个 IP 有可能是真实的，可以使用。在用户登录时就可以加上这段逻辑，
+用来记录用户登录的 IP 是什么。
+
+在用户登录的代码中更新数据库，将当前登录的 IP 更新到数据库：
+
+```java
+// 记录当前登录用户的 IP
+String ipAddress = IpUtil.getIpAddress(request);
+// 更新数据库中的 user_info 表，记录登录 IP
+userInfo.setLastLoginIp(ipAddress);
+updateById(userInfo);
+```
+
+既然能够获取到用户的登录 IP 了，那就可以对 IP 地址进行登录操作的次数限制了，这个限制操作和之前的逻辑一样，设置一个自增，第一次就设置过期时间，后续每次访问都自增，
+只不过这里要分情况了，一个是登录用户的用户名（或手机号），一个是登录用户的 IP 地址，也就是要使用两个 key。这里不再查询数据库使用用户的 id 作为 key 了，
+感觉没什么必要，只是一个限制登录次数的逻辑还查询数据库的话性能就不行了，因此直接使用前端传递的用户名或手机号作为 key（取决于使用的哪种登录方式）。
+
+```java
+@Override
+public Boolean checkLoginCount(UserLoginDto userLoginDto, HttpServletRequest request) {
+    // 根据用户名或手机号查用户信息
+    String keyForUser = LoginConstant.LOGIN_LIMIT_KEY + (StrUtil.isEmpty(userLoginDto.getUsername()) ? userLoginDto.getPhone() : userLoginDto.getUsername());
+    Boolean resultForUser = checkLoginCount(keyForUser);
+    Boolean resultForIp = false;
+    String ipAddress = IpUtil.getIpAddress(request);
+    if (StrUtil.isNotEmpty(ipAddress)) {
+        String keyForUserIp = LoginConstant.LOGIN_LIMIT_IP_KEY + ipAddress;
+        resultForIp = checkLoginCount(keyForUserIp);
+    }
+    return resultForUser && resultForIp;
+}
+```
+
+```java
+public Boolean checkLoginCount(String key) {
+    Long loginCount = stringRedisTemplate.opsForValue().increment(key);
+    if (loginCount != null && loginCount == 1) {
+        stringRedisTemplate.expire(key, LoginConstant.LOGIN_COUNT_SURVIVE_TTL, TimeUnit.SECONDS);
+    }
+    return loginCount != null && loginCount <= LoginConstant.LOGIN_COUNT_LIMIT;
+}
+```
+
+****
+### 2.10 session 的自动创建
+
+Session 的自动创建通常发生在以下情况之一：
+
+- 首次调用 request.getSession() 或 request.getSession(true)
+- 应用程序首次尝试向 session 中存储属性 
+- 通过 JSESSIONID cookie 识别到已有 session
+
+在 Spring MVC 中，只要你在 Controller 方法中声明了 HttpSession 或 HttpServletRequest，就可能触发自动创建：
+
+```java
+@PostMapping("/login")
+public String login(UserLoginDto dto, HttpSession session) {
+    // session 会在这里自动创建（如果之前没有的话）
+}
+```
+
+SpringMVC 在程序运行时会解析 Controller 方法的参数，如果参数是 HttpSession，那默认就会调用 request.getSession()，
+而 getSession() 默认参数是 true，所以会创建 session。如果使用 HttpServletRequest，并且手动调用 request.getSession()，也会自动创建 session，
+但仅声明 HttpServletRequest 并不会自动创建 session，只有你主动调用 getSession() 才会。
+
+也就是说，之前的那种写法，会导致每次调用都自动生成一个 session 保存到 Redis，只不过这个 session 没有保存 userId，因此在 Redis 中总能看到 session 但在拦截器中却始终拦截到这条请求。
+所以以后使用 HttpServletRequest 来手动创建 session，避免和自动创建的 session 产生混淆。
+
+****
+# 三、权限管理
+
+
+
+
+
+
+
