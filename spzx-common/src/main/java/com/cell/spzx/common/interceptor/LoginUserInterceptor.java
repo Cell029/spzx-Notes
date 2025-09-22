@@ -18,9 +18,6 @@ public class LoginUserInterceptor implements HandlerInterceptor {
     // 配置 log
     private static final Logger log = Logger.getLogger(LoginUserInterceptor.class.getName());
 
-    @Autowired
-    private StringRedisTemplate stringRedisTemplate;
-
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
         String requestUri = request.getRequestURI();

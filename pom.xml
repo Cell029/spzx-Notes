@@ -9,59 +9,5 @@
     <version>1.0-SNAPSHOT</version>
     <packaging>pom</packaging>
 
-    <!-- 指定父工程 -->
-    <parent>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.0.5</version>
-    </parent>
 
-    <properties>
-        <maven.compiler.source>21</maven.compiler.source>
-        <maven.compiler.target>21</maven.compiler.target>
-        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <mysql.verison>8.0.30</mysql.verison>
-        <fastjson.version>2.0.21</fastjson.version>
-        <lombok.version>1.18.20</lombok.version>
-        <mybatisplus.version>3.5.5</mybatisplus.version>
-    </properties>
-    <!-- 管理依赖，版本锁定 -->
-    <dependencyManagement>
-        <dependencies>
-            <!-- mybatisplus 依赖 -->
-            <dependency>
-                <groupId>com.baomidou</groupId>
-                <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
-                <version>${mybatisplus.version}</version>
-            </dependency>
-
-            <!-- mysql 驱动 -->
-            <dependency>
-                <groupId>mysql</groupId>
-                <artifactId>mysql-connector-java</artifactId>
-                <version>${mysql.version}</version>
-            </dependency>
-
-            <!--fastjson-->
-            <dependency>
-                <groupId>com.alibaba</groupId>
-                <artifactId>fastjson</artifactId>
-                <version>${fastjson.version}</version>
-            </dependency>
-
-            <!-- lombok依赖 -->
-            <dependency>
-                <groupId>org.projectlombok</groupId>
-                <artifactId>lombok</artifactId>
-                <version>${lombok.version}</version>
-            </dependency>
-
-            <!-- redis的起步依赖 -->
-            <dependency>
-                <groupId>org.springframework.boot</groupId>
-                <artifactId>spring-boot-starter-data-redis</artifactId>
-            </dependency>
-
-        </dependencies>
-    </dependencyManagement>
 </project>

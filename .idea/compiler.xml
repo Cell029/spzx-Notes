@@ -8,8 +8,9 @@
         <sourceTestOutputDir name="target/generated-test-sources/test-annotations" />
         <outputRelativeToContentRoot value="true" />
         <module name="spzx-model" />
-        <module name="spzx-auth-server" />
         <module name="spzx-common" />
+        <module name="spzx-auth-server" />
+        <module name="spzx-authority-manage" />
       </profile>
     </annotationProcessing>
     <bytecodeTargetLevel>
@@ -25,6 +26,7 @@
       <module name="common-service" options="" />
       <module name="common-util" options="" />
       <module name="spzx-auth-server" options="-parameters" />
+      <module name="spzx-authority-manage" options="-parameters" />
       <module name="spzx-common" options="-parameters" />
       <module name="spzx-manager" options="" />
       <module name="spzx-model" options="" />

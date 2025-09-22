@@ -379,6 +379,29 @@ redis:8.2
 当然，实体类上要用 @TableName 标注表名，用 @TableId(type = IdType.AUTO) 标注为自增主键；然后就是让 Mapper 继承 BaseMapper<T>，ServiceImpl 继承 ServiceImpl<T, V>。
 这样才能在 Service 或 Mapper 层使用 MybatisPlus。
 
+配置 yaml 文件：
+
+```yaml
+# 数据源配置
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3306/spzx?useSSL=false&serverTimezone=Asia/Shanghai
+    username: root
+    password: 123
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+# MyBatis-Plus 提供一些功能配置（可以不配）
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true  # 驼峰映射
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl  # SQL 打印日志（如果还引入了低版本的 MyBatis 可能会报错）
+  global-config:
+    db-config:
+      id-type: auto # 主键策略，可选 auto、input、uuid 等
+      logic-delete-value: 1 # 逻辑删除值
+      logic-not-delete-value: 0
+```
+
 ****
 ## 2. 登录流程
 
@@ -1701,7 +1724,802 @@ SpringMVC 在程序运行时会解析 Controller 方法的参数，如果参数�
 ****
 # 三、权限管理
 
+在后台管理系统中，权限管理是指为了保证系统操作的安全性和可控性。对用户的操作权限进行限制和管理，简单的来说就是某一个用户可以使用系统的哪些功能，比如：
+管理员可以使用后台管理系统中的所有功能，普通业务人员只能使用系统中的一部分的功能。
 
+一般来说，权限管理包括以下几个方面：
+
+1. 用户管理：通过对用户进行账号、密码、角色等信息的管理。 
+2. 角色管理：将多个用户分组，并根据所属角色的权限区分用户的访问权限。 
+3. 菜单管理：对系统的菜单进行管理，根据用户或角色的权限动态生成可访问的菜单列表。 
+4. 日志管理：记录系统的操作日志，方便用户或管理员查看系统运行情况，以及对不当操作进行追踪和处理。
+
+****
+## 1. 角色管理
+
+### 1.1 新增角色
+
+新增角色就是在 sys_role 中新增一条数据，可以直接利用 MybatisPlus 也可以使用 Mybatis，前端一般都是给一个表单页面，在表单中输入要新增的角色的信息，后端接收到后，
+执行插入操作即可。
+
+Controller 层：
+
+后端接收到前端表单提交的数据，通常都是要用一个实体类进行接收的，而这个插入操作一般不涉及其他的一些复杂修改操作，因此直接用数据库中 sys_role 表对应的实体类进行接收即可：
+
+```java
+@Data
+@Schema(description = "角色实体类")
+public class SysRole extends BaseEntity {
+
+    private static final long serialVersionUID = 1L;
+
+    @Schema(description = "角色名称")
+    private String roleName;
+
+    @Schema(description = "角色编码")
+    private String roleCode;
+
+    @Schema(description = "描述")
+    private String description;
+
+}
+```
+
+```java
+@PutMapping("/addRole")
+@Operation(summary = "新增角色", description = "在 sys_role 表中插入一条数据")
+public Result addSysRole(@RequestBody SysRole sysRole) {
+    roleManageService.addSysRole(sysRole);
+    return Result.build(null, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层:
+
+```java
+@Override
+public void addSysRole(SysRole sysRole) {
+    save(sysRole);
+}
+```
+
+或者使用普通的 Mybatis 插入数据：
+
+```xml
+<insert id="saveSysRole">
+    insert into sys_role (
+    id,
+    role_name,
+    role_code,
+    description
+    ) values (
+    #{roleName},
+    #{roleCode},
+    #{description}
+    )
+</insert>
+```
+
+通过接口文档进行测试：
+
+```json
+{
+  "id": 0,
+  "createTime": "",
+  "updateTime": "",
+  "isDeleted": 0,
+  "roleName": "普通用户",
+  "roleCode": "user",
+  "description": ""
+}
+```
+
+```json
+{
+  "code": 200,
+  "message": "操作成功",
+  "data": null
+}
+```
+
+****
+### 1.2 查询角色
+
+#### 1.2.1 使用 PageHelper
+
+查询操作一般都是用的分页查询，可以使用 MyBatis 的分页查询，该方法需要引入 Mybatis 的分页查询的依赖 PageHelper：
+
+```xml
+<dependency>
+    <groupId>com.github.pagehelper</groupId>
+    <artifactId>pagehelper-spring-boot-starter</artifactId>
+    <version>1.4.6</version>
+</dependency>
+```
+
+Controller 层：
+
+查询操作前端一般会输入一些查询条件，而这里的查询角色，则是可以输入角色名或者角色编码进行查询，而除了这些条件，后端还需要接收前端传递的分页查询条件，例如查询页码、
+每页的最大记录数，因此这些都需要用一个实体类进行接收：
+
+```java
+@Data
+@Schema(description = "查询系统角色请求参数")
+public class RoleQueryDto {
+    @Schema(description = "查询页码")
+    private Integer page;
+
+    @Schema(description = "每页数据条数")
+    private Integer size;
+
+    @Schema(description = "角色名")
+    private String roleName;
+
+    @Schema(description = "角色编码")
+    private String roleCode;
+
+    public Integer getPage() {
+        return (page == null || page <= 0) ? 1 : page;
+    }
+
+    public Integer getSize() {
+        return (size == null || size <= 0) ? 10 : size;
+    }
+}
+```
+
+为了防止前端传递查询条件时没有输入页码和记录条数，所以在后端需要给它们设置一下默认值，这里设置的是第一页和每页 10 条记录。
+
+当然，后端查询出数据后不建议直接把 SysRole 对象集合直接返回给前端，如果直接返回 List<SysRole>，前端无法判断总条数，也就无法渲染分页控件。
+前端还需要判断满足条件的总共有多少条记录，可以分为多少页等信息，因此返回的数据也需要用一个实体类进行封装：
+
+```java
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
+public class PageResult<T> {
+    private long total;
+    private long pages;
+    private List<T> records;
+}
+```
+
+这个实体类封装了满足条件的总共条数，可以分为多少页以及从数据库中查询出满足条件的数据集合。
+
+```java
+@PostMapping("/listRoleByPageHelper")
+@Operation(summary = "用 PageHelper 查询所有角色", description = "分页查询所有角色")
+public Result listSysRoleByPageHelper(@RequestBody RoleQueryDto  roleQueryDto) {
+    PageResult<SysRole> sysRoleByPage = roleManageService.getSysRoleByPageHelper(roleQueryDto);
+    return Result.build(sysRoleByPage, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+PageHelper 的使用就三步：
+
+1. 开启分页，PageHelper 会拦截后续的数据库查询，为 sql 语句自动添加分页参数，例如 LIMIT offset, size
+2. 执行查询，调用 Mapper 方法执行查询，PageHelper 会自动对查询结果进行分页。
+3. 将查到的结果进行封装，查询结果是一个 List<SysRole>，用 PageInfo 对象封装
+   - sysRolePageInfo.getList()：当前页数据 
+   - sysRolePageInfo.getTotal()：满足条件的总记录数 
+   - sysRolePageInfo.getPages()：总页数
+
+```java
+@Override
+public PageResult<SysRole> getSysRoleByPageHelper(RoleQueryDto roleQueryDto) {
+    // 开启分页
+    PageHelper.startPage(roleQueryDto.getPage(), roleQueryDto.getSize());
+
+    // 执行查询
+    List<SysRole> sysRoleList = roleManageMapper.selectAll(roleQueryDto.getRoleName(), roleQueryDto.getRoleCode());
+
+    // 封装结果
+    PageInfo<SysRole> sysRolePageInfo = new PageInfo<>(sysRoleList);
+    PageResult<SysRole> sysRolePageResult = new PageResult<>();
+    sysRolePageResult.setRecords(sysRolePageInfo.getList());
+    sysRolePageResult.setTotal(sysRolePageInfo.getTotal());
+    sysRolePageResult.setPages(sysRolePageInfo.getPages());
+    
+    return sysRolePageResult;
+}
+```
+
+Mapper 层：
+
+```java
+public interface RoleManageMapper extends BaseMapper<SysRole>{
+    List<SysRole> selectAll(@Param("roleName") String roleName, @Param("roleCode") String roleCode);
+}
+```
+
+```xml
+<mapper namespace="com.cell.spzx.role_manage.mapper.RoleManageMapper">
+
+    <!-- MyBatis 映射结果集的配置，用来告诉 MyBatis 数据库查询结果该如何映射到 Java 对象 -->
+    <resultMap type="com.cell.model.entity.system.SysRole" id="sysRoleMap">
+        <result property="id" column="id"/>
+        <result property="roleName" column="role_name"/>
+        <result property="roleCode" column="role_code"/>
+        <result property="description" column="description"/>
+        <result property="createTime" column="create_time"/>
+        <result property="updateTime" column="update_time"/>
+        <result property="isDeleted" column="is_deleted"/>
+    </resultMap>
+
+    <select id="selectAll" resultMap="sysRoleMap">
+        SELECT id, role_name, role_code, description, create_time, update_time, is_deleted
+        FROM sys_role
+        <where>
+            <if test="roleName != null and roleName != ''">
+                AND role_name LIKE CONCAT('%', #{roleName}, '%')
+            </if>
+            <if test="roleCode != null and roleCode != ''">
+                AND role_code LIKE CONCAT('%', #{roleCode}, '%')
+            </if>
+            AND is_deleted = 0
+        </where>
+    </select>
+
+</mapper>
+```
+
+当然，查询出的时间信息需要设置正确的时区：
+
+```yaml
+spring:
+  jackson:
+    time-zone: Asia/Shanghai # 时区
+```
+
+****
+#### 1.2.2 使用 MyBatisPlus 的分页插件
+
+在 SpringBoot 项目中，想要使用 MyBatisPlus 的分页功能，就必须注册分页拦截器 PaginationInnerInterceptor。
+
+```java
+@Configuration
+public class MyBatisPlusConfig {
+    @Bean
+    public MybatisPlusInterceptor mybatisPlusInterceptor() {
+        MybatisPlusInterceptor interceptor = new MybatisPlusInterceptor();
+        PaginationInnerInterceptor pagination = new PaginationInnerInterceptor(DbType.MYSQL);
+        pagination.setOverflow(false); // 溢出页的处理：true/false，true 表示请求溢出页时返回第一页数据；false 表示返回空数据
+        pagination.setMaxLimit(500L); // 单页最大条数（-1 不限制）
+        // 添加分页拦截器
+        interceptor.addInnerInterceptor(pagination);
+        return interceptor;
+    }
+}
+```
+
+Controller 层：
+
+```java
+@PostMapping("/listRole")
+@Operation(summary = "查询所有角色", description = "分页查询所有角色")
+public Result listSysRole(@RequestBody RoleQueryDto  roleQueryDto) {
+    PageResult<SysRole> sysRoleByPage = roleManageService.getSysRoleByPage(roleQueryDto);
+    return Result.build(sysRoleByPage, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+MaBatisPlus 的分页查询其实和 MyBatis 的类似：
+
+1. 构造查询条件
+2. 构造分页对象，这一步与 MyBatis 的开启分页类似，也是传递查询页码和每页数据条数
+3. 封装结果，将分页对象和查询条件一起传递给 MyBatisPlus 自带的 page() 方法，内部会自动执行查询当前页数据 SQL（带 LIMIT）与查询总记录数 SQL（COUNT）
+
+```java
+@Override
+public PageResult<SysRole> getSysRoleByPage(RoleQueryDto roleQueryDto) {
+    LambdaQueryWrapper<SysRole> lambdaQueryWrapper = new LambdaQueryWrapper<>();
+    // 多个条件默认就是 AND 关系
+    if (roleQueryDto.getRoleName() != null) {
+        lambdaQueryWrapper.like(SysRole::getRoleName, roleQueryDto.getRoleName());
+    }
+    if (roleQueryDto.getRoleCode() != null) {
+        lambdaQueryWrapper.like(SysRole::getRoleCode, roleQueryDto.getRoleCode());
+    }
+    // 构造分页对象
+    Page<SysRole> page = new Page<>(roleQueryDto.getPage(), roleQueryDto.getSize());
+    // 查询后的结果
+    Page<SysRole> sysRolePage = page(page, lambdaQueryWrapper);
+    return new PageResult<SysRole>(sysRolePage.getPages(), sysRolePage.getTotal(), sysRolePage.getRecords());
+}
+```
+
+通过接口文档进行测试：
+
+```json
+{
+  "page": 0,
+  "size": 0,
+  "roleName": "",
+  "roleCode": ""
+}
+```
+
+```json
+{
+  "code": 200,
+  "message": "操作成功",
+  "data": {
+    "total": 5,
+    "pages": 1,
+    "records": [
+      {
+        "id": 2,
+        "createTime": "2023-09-03 13:23:41",
+        "updateTime": "2023-09-03 13:23:59",
+        "isDeleted": 0,
+        "roleName": "test02",
+        "roleCode": "test02",
+        "description": "test02"
+      },
+      {
+        "id": 9,
+        "createTime": "2023-05-04 02:36:06",
+        "updateTime": "2023-06-02 01:03:31",
+        "isDeleted": 0,
+        "roleName": "平台管理员",
+        "roleCode": "ptgly",
+        "description": "平台管理员"
+      },
+      {
+        "id": 10,
+        "createTime": "2023-05-04 02:36:22",
+        "updateTime": "2023-07-18 00:40:56",
+        "isDeleted": 0,
+        "roleName": "用户管理员",
+        "roleCode": "yhgly",
+        "description": "用户管理员"
+      },
+      {
+        "id": 36,
+        "createTime": "2023-09-03 15:23:04",
+        "updateTime": "2023-09-03 15:23:04",
+        "isDeleted": 0,
+        "roleName": "销售人员",
+        "roleCode": "销售",
+        "description": null
+      },
+      {
+        "id": 37,
+        "createTime": "2023-09-03 15:24:26",
+        "updateTime": "2023-09-04 02:04:17",
+        "isDeleted": 0,
+        "roleName": "测试人员",
+        "roleCode": "test",
+        "description": null
+      }
+    ]
+  }
+}
+```
+
+****
+### 1.3 删除角色
+
+#### 1.3.1 使用 MyBatis 进行删除
+
+在前端，操作者可以点击查询出的角色的删除按钮进行单个删除，也可以选中多个角色后点击批量删除，这两者的区别就是一个传递的是单个 roleId，一个传递的是 roleId 集合，
+但这两者可以写成一个方法，只要删除条件为 in(roleIds) 即可，不管是删一个还是多个，都能正常执行。
+
+Controller 层：
+
+```java
+@DeleteMapping("/deleteRoleByMB")
+@Operation(summary = "使用 MyBatis 删除角色", description = "可以选择删除单个数据或批量删除")
+public Result deleteSysRoleByMB(@RequestBody List<Long> ids) {
+    if (ids == null || ids.isEmpty()) {
+        return Result.build(null, ResultCodeEnum.DATA_ERROR);
+    }
+    roleManageService.deleteSysRoleByMB(ids);
+    return Result.build(null, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+```java
+@Override
+public void deleteSysRoleByMB(List<Long> ids) {
+    roleManageMapper.deleteSysRoleByMB(ids);
+}
+```
+
+Mapper 层：
+
+```java
+void deleteSysRoleByMB(@Param("ids") List<Long> ids);
+```
+
+```xml
+<delete id="deleteSysRoleByMB">
+    DELETE FROM sys_role WHERE id in
+    <foreach collection="list" item="id" open="(" separator="," close=")">
+        #{id}
+    </foreach>
+</delete>
+```
+
+不能使用 WHERE role_id in (#{ids})，这样 MyBatis 会将其作为一个整体字符串处理（WHERE role_id in ('[1,2,3]')），虽然可以使用 ${} 进行字符串拼接，
+但这种操作是不安全的（sql 注入风险），因此还是推荐使用 `<foreach>` 标签。不过本项目采取的是逻辑删除，所以真实的删除操作实际为修改操作：
+
+```xml
+<update id="deleteSysRoleByMB" parameterType="java.util.List">
+    update sys_role set is_deleted = 1 where id in
+    <foreach collection="ids" item="id" open="(" separator="," close=")">
+        #{id}
+    </foreach>
+</update> 
+```
+
+****
+#### 1.3.2 使用 MyBatisPlus 进行删除
+
+Controller 层：
+
+```java
+@DeleteMapping("/deleteRole")
+@Operation(summary = "删除角色", description = "可以选择删除单个数据或批量删除")
+public Result deleteSysRole(@RequestBody List<Long> ids) {
+    if (ids == null || ids.isEmpty()) {
+        return Result.build(null, ResultCodeEnum.DATA_ERROR);
+    }
+    roleManageService.deleteSysRole(ids);
+    return Result.build(null, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+Service 层直接调用 MyBatisPlus 自带的批量删除方法，因为在逻辑删除字段上使用了 @TableLogic，底层会拼接 UPDATE ... WHERE id IN (...)
+
+```java
+@TableLogic
+@Schema(description = "是否删除")
+private Integer isDeleted;
+```
+
+```java
+@Override
+@Transactional(rollbackFor = Exception.class)
+public void deleteSysRole(List<Long> ids) {
+    removeBatchByIds(ids);
+}
+```
+
+****
+### 1.4 修改角色
+
+#### 1.4.1 使用 MyBatis 修改
+
+```java
+@PutMapping("/updateSysRoleByMB")
+@Operation(summary = "使用 MyBatis 修改角色", description = "根据传递的数据进行选择性修改")
+public Result updateSysRoleByMB(@RequestBody SysRole sysRole) {
+    roleManageService.updateSysRoleByMB(sysRole);
+    return Result.build(null, ResultCodeEnum.SUCCESS);
+}
+```
+
+```java
+@Override
+public void updateSysRoleByMB(SysRole sysRole) {
+    roleManageMapper.updateSysRoleByMB(sysRole);
+}
+```
+
+Mapper 层：
+
+```java
+void updateSysRoleByMB(SysRole sysRole);
+```
+
+```xml
+<update id="updateSysRoleByMB" parameterType="com.cell.model.entity.system.SysRole">
+    update sys_role
+    <set>
+        <if test="roleName != null">role_name = #{roleName},</if>
+        <if test="roleCode != null">role_code = #{roleCode},</if>
+        <if test="description != null">description = #{description},</if>
+    </set>
+    where id = #{id}
+</update>
+```
+
+****
+#### 1.4.2 使用 MyBatisPlus 修改
+
+在前端点击某个角色的修改按钮时会弹出一个表格，该表中会回显该角色的所有相关信息，因此，这里会涉及到一个查询操作：
+
+```java
+@GetMapping("/selectById/{id}")
+@Operation(summary = "根据 Id 查询角色", description = "修改角色信息时需要回显原有的数据，也就是一次查询操作")
+public Result selectById(@PathVariable Long id) {
+    SysRole sysRole = roleManageService.selectById(id);
+    return Result.build(sysRole, ResultCodeEnum.SUCCESS);
+}
+
+@Override
+public SysRole selectById(Long id) {
+    return getById(id);
+}
+```
+
+Controller 层：
+
+```java
+@PutMapping("/updateSysRole")
+@Operation(summary = "修改角色", description = "根据传递的数据进行选择性修改")
+public Result updateSysRole(@RequestBody SysRole sysRole) {
+    roleManageService.updateSysRole(sysRole);
+    return Result.build(null, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+注意：这里不能直接调用 MyBatisPlus 的 updateById(Object obj) 方法，因为这个方法它底层会自动根据实体类字段生成 UPDATE 语句，也就是说，如果这里传入 SysRole 对象，
+那么就会生成：
+
+```sql
+UPDATE sys_role
+SET role_name = ?, role_code = ?, description = ?, update_time = ?, is_deleted = ?
+WHERE id = ?
+```
+
+也就是说，它不会进行非空的判断，所以得使用普通的 update() 方法，传入手动构造的更新语句条件。
+
+```java
+@Override
+public void updateSysRole(SysRole sysRole) {
+    LambdaUpdateWrapper<SysRole> lambdaUpdateWrapper = new LambdaUpdateWrapper<>();
+    lambdaUpdateWrapper.eq(SysRole::getId, sysRole.getId());
+    if (sysRole.getRoleName() != null && !sysRole.getRoleName().isEmpty()) {
+        lambdaUpdateWrapper.set(SysRole::getRoleName, sysRole.getRoleName());
+    }
+    if (sysRole.getRoleCode() != null && !sysRole.getRoleCode().isEmpty()) {
+        lambdaUpdateWrapper.set(SysRole::getRoleCode, sysRole.getRoleCode());
+    }
+    if (sysRole.getDescription() != null && !sysRole.getDescription().isEmpty()) {
+        lambdaUpdateWrapper.set(SysRole::getDescription, sysRole.getDescription());
+    }
+    update(lambdaUpdateWrapper);
+}
+```
+
+****
+## 2. 系统用户管理
+
+该功能模块主要是针对系统用户的，也就是面向系统管理层，是后台系统用户，例如给管理员、运维人员、客服等新增账号，因此需要新增一个数据库表 sys_user，它和 user_info 不一样，
+user_info 是面向业务层的用户信息表，比如普通用户、客户、会员等，用户登录校验时也是从这张表中查询数据，本质上是业务用户表，和系统权限、角色、登录功能无关；
+而 sys_user 主要存储系统管理相关数据，例如用户名、密码、状态、角色 ID、权限信息等，用于权限控制和角色分配的操作。与其对应的实体类为：
+
+```java
+@Data
+@TableName("sys_user")
+@Schema(description = "系统用户实体类")
+public class SysUser extends BaseEntity {
+
+	@Schema(description = "用户名")
+	private String userName;
+
+	@Schema(description = "密码")
+	private String password;
+
+	@Schema(description = "昵称")
+	private String name;
+
+	@Schema(description = "手机号码")
+	private String phone;
+
+	@Schema(description = "头像")
+	private String avatar;
+
+	@Schema(description = "描述")
+	private String description;
+
+	@Schema(description = "状态（1：正常 0：停用）")
+	private Integer status;
+
+}
+```
+
+****
+### 2.1 新增系统用户
+
+```java
+@PostMapping("/addSysUser")
+@Operation(summary = "新增系统用户", description = "在 sys_user 表中插入数据")
+public Result addSysUser(@RequestBody SysUser sysUser) {
+    sysUserService.addSysUser(sysUser);
+    return Result.build(null, ResultCodeEnum.SUCCESS);
+}
+```
+
+```java
+@Override
+public void addSysUser(SysUser sysUser) {
+    save(sysUser);
+}
+```
+
+****
+### 2.2 查询系统用户
+
+Controller 层：
+
+```java
+@PostMapping("/selectSysUserPage")
+@Operation(summary = "查询所有系统用户", description = "分页查询所有系统用户")
+public Result selectSysUserPage(@RequestBody SysUserQueryDto sysUserQueryDto) {
+    PageResult<SysUser> sysUserPageResult = sysUserService.selectSysUserPage(sysUserQueryDto);
+    return Result.build(sysUserPageResult, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+```java
+@Override
+public PageResult<SysUser> selectSysUserPage(SysUserQueryDto sysUserQueryDto) {
+    // 构造查询条件
+    LambdaQueryWrapper<SysUser> lambdaQueryWrapper = new LambdaQueryWrapper<>();
+    if (sysUserQueryDto.getUsername() != null && !sysUserQueryDto.getUsername().isEmpty()) {
+        lambdaQueryWrapper.like(SysUser::getUsername, sysUserQueryDto.getUsername());
+    }
+    if (sysUserQueryDto.getName() != null && !sysUserQueryDto.getName().isEmpty()) {
+        lambdaQueryWrapper.like(SysUser::getName, sysUserQueryDto.getName());
+    }
+    if (sysUserQueryDto.getPhone() != null && !sysUserQueryDto.getPhone().isEmpty()) {
+        lambdaQueryWrapper.eq(SysUser::getPhone, sysUserQueryDto.getPhone());
+    }
+    // 构造分页对象
+    Page<SysUser> page = new Page<>(sysUserQueryDto.getPage(), sysUserQueryDto.getSize());
+    // 查询后的结果
+    Page<SysUser> sysRolePage = page(page, lambdaQueryWrapper);
+
+    return new PageResult<SysUser>(sysRolePage.getTotal(), sysUserQueryDto.getPage(), sysRolePage.getRecords());
+}
+```
+
+****
+### 2.3 系统用户头像
+
+当在进行用户添加的时候，此时可以在添加表单页面点击 "+" 号，然后选择要上传的用户图像。选择完毕以后，那么此时就会请求后端上传文件接口，将图片的二进制数据传递到后端。
+后端需要将数据图片存储起来，然后给前端返回图片的访问地址，然后前端需要将图片的访问地址设置给 sysUser 数据模型，当用户点击提交按钮的时候，那么此时就会将表单进行提交，
+后端将数据保存起来即可。
+
+****
+#### 2.3.1 Minio
+
+目前可用于文件存储的网络服务选择也有不少，比如阿里云 OSS、七牛云、腾讯云等等，可是收费。为了节约成本，很多公司使用 MinIO 做为文件服务器。
+官网：[https://www.minio.org.cn/](https://www.minio.org.cn/)。
+
+安装地址：[https://www.minio.org.cn/docs/cn/minio/container/index.html](https://www.minio.org.cn/docs/cn/minio/container/index.html)。
+也可以使用 Docker 安装（如果设置账号密码，要求账号不小于 3 位，密码不小于 8 位）：
+
+```shell
+docker run -d \
+  --name minio \
+  -p 9001:9000 \
+  -p 9090:9090 \
+  -v /root/minio/data:/data \
+  -e "MINIO_ROOT_USER=admin" \
+  -e "MINIO_ROOT_PASSWORD=admin123" \
+  minio/minio server /data --console-address ":9090"
+```
+
+需要注意的是，MinIO 默认端口：
+
+- API 端口：9000 
+- 控制台端口：9001
+
+Portainer 默认端口：
+
+- Web 界面：9000（新版有时是 9443 用于 https）
+
+如果在同一台服务器上都使用默认端口运行，那 Portainer 的 9000 和 MinIO 的 9000 会冲突，因为同一台机器同一时间同一个端口只能绑定一次。所以在创建 MinIO 的时候要修改一下端口的绑定，
+按照上面的命令创建 MinIO，宿主机访问 9001 就相当于访问容器内部的 API 9000，-p 9090:9090 + --console-address ":9090" 代表宿主机访问 9090 就可以打开 MinIO Web 控制台。
+安装成功后，访问 192.168.149.101/9090 即可进入，
+
+```shell
+# 设置别名代替 MinIO 链接，设置时需要设置本地绑定的端口号，而不是可视化界面的端口号
+mc alias set myminio http://192.168.149.101:9001 admin admin123
+
+# 测试连接
+mc ls myminio
+```
+
+1、创建 Bucket
+
+```shell
+mc mb myminio/testbucket
+```
+
+Web 控制台：点击 “+ Create bucket” -> 填写名称 -> 创建
+
+2、上传文件
+
+```shell
+mc cp /root/file.txt myminio/testbucket/
+```
+
+Web 控制台：进入 Bucket -> 点击 Upload -> 选择文件 -> 上传
+
+Web 控制台单节点模式不显示策略管理菜单，所以单节点只能用 CLI 来删除 Bucket 和设置访问策略。
+
+3、删除
+
+```shell
+# 空 Bucket
+mc rb myminio/spzx-bucket
+
+# 非空 Bucket
+mc rb --force myminio/spzx-bucket
+
+# 删除桶中文件
+mc rm myminio/spzx-bucket/file.txt
+```
+
+4、设置访问策略（公开读取）
+
+```shell
+# 设置 Bucket 允许匿名读取（公开访问）
+mc anonymous set download myminio/spzx-bucket
+``` 
+
+测试上传文件：
+
+添加 MinIO 的依赖：
+
+```xml
+<!-- MinIO -->
+<dependency>
+    <groupId>io.minio</groupId>
+    <artifactId>minio</artifactId>
+    <version>8.5.7</version>
+</dependency>
+```
+
+编写测试类：
+
+```java
+@Test
+void testMinIOFileUpload() throws ServerException, InsufficientDataException, ErrorResponseException, IOException, NoSuchAlgorithmException, InvalidKeyException, InvalidResponseException, XmlParserException, InternalException {
+    // 创建一个Minio的客户端对象
+    MinioClient minioClient = MinioClient.builder()
+            .endpoint("http://192.168.149.101:9001")
+            .credentials("admin", "admin123")
+            .build();
+
+    boolean found = minioClient.bucketExists(BucketExistsArgs.builder().bucket("spzx-bucket").build());
+
+    // 如果不存在，那么此时就创建一个新的桶
+    if (!found) {
+        minioClient.makeBucket(MakeBucketArgs.builder().bucket("spzx-bucket").build());
+    } else {  // 如果存在打印信息
+        System.out.println("Bucket 'spzx-bucket' already exists.");
+    }
+
+    FileInputStream fis = new FileInputStream("E://001.jpg") ;
+    PutObjectArgs putObjectArgs = PutObjectArgs.builder()
+            .bucket("spzx-bucket") // 选择桶
+            .stream(fis, fis.available(), -1) // 设置要上传的文件，文件大小，以及分块大小（-1 表示自动处理分块大小）
+            .object("001.jpg") // 设置上传文件后存储在桶中的文件名
+            .build();
+    minioClient.putObject(putObjectArgs) ;
+
+}
+```
+
+****
 
 
 
