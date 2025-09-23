@@ -6,6 +6,7 @@ import com.cell.model.entity.system.SysRole;
 import com.cell.model.vo.h5.PageResult;
 
 import java.util.List;
+import java.util.Map;
 
 public interface RoleManageService extends IService<SysRole> {
 
@@ -24,5 +25,7 @@ public interface RoleManageService extends IService<SysRole> {
     void updateSysRole(SysRole sysRole);
 
     SysRole selectById(Long id);
+
+    Map<String, List<SysRole>> listAllSysRole();
 
 }

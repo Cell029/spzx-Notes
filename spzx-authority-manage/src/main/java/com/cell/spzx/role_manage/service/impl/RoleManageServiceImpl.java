@@ -15,7 +15,10 @@ import com.github.pagehelper.PageInfo;*/
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 @Service("roleManageService")
 public class RoleManageServiceImpl extends ServiceImpl<RoleManageMapper, SysRole> implements RoleManageService {
@@ -97,6 +100,14 @@ public class RoleManageServiceImpl extends ServiceImpl<RoleManageMapper, SysRole
     @Override
     public SysRole selectById(Long id) {
         return getById(id);
+    }
+
+    @Override
+    public Map<String, List<SysRole>> listAllSysRole() {
+        List<SysRole> sysRoleList = list();
+        Map<String, List<SysRole>> listAllSysRole = new HashMap<>();
+        listAllSysRole.put("allSysRole", sysRoleList);
+        return listAllSysRole;
     }
 
 }

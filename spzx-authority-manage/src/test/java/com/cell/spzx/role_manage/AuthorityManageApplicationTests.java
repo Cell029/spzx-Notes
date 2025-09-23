@@ -14,7 +14,7 @@ import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
 
 @SpringBootTest
-class SpzxRoleManageApplicationTests {
+class AuthorityManageApplicationTests {
 
     @Test
     void contextLoads() {

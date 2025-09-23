@@ -10,6 +10,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 @RestController
 @RequestMapping("/sys_user")
@@ -20,10 +21,24 @@ public class SysUserController {
     private SysUserService sysUserService;
 
     @PostMapping("/addSysUser")
-    @Operation(summary = "新增系统用户", description = "在 sys_user 表中插入数据")
+    @Operation(summary = "新增系统用户", description = "在 sys_user 表中插入数据，同时将存储在 Minio 中临时目录的头像转移到固定目录")
     public Result addSysUser(@RequestBody SysUser sysUser) {
         sysUserService.addSysUser(sysUser);
         return Result.build(null, ResultCodeEnum.SUCCESS);
+    }
+
+    @PutMapping("/updateSysUser")
+    @Operation(summary = "修改系统用户", description = "修改数据的同时检查是否更新头像，如果更新则删除保存在 Minio 中的旧头像数据")
+    public Result updateSysUser(@RequestBody SysUser sysUser) {
+        sysUserService.updateSysUse(sysUser);
+        return Result.build(null, ResultCodeEnum.SUCCESS);
+    }
+
+    @PostMapping("/selectSysUserById/{id}")
+    @Operation(summary = "修改系统用户时的回显数据", description = "点击修改按钮时会触发该接口显示当前用户的详细信息")
+    public Result selectSysUserById(@PathVariable("id") Long id) {
+        SysUser sysUser = sysUserService.selectSysUserById(id);
+        return Result.build(sysUser, ResultCodeEnum.SUCCESS);
     }
 
     @PostMapping("/selectSysUserPage")
@@ -32,5 +47,21 @@ public class SysUserController {
         PageResult<SysUser> sysUserPageResult = sysUserService.selectSysUserPage(sysUserQueryDto);
         return Result.build(sysUserPageResult, ResultCodeEnum.SUCCESS);
     }
+
+    @PutMapping("/uploadAvatar")
+    @Operation(summary = "上传头像", description = "上传头像到 Minio")
+    public Result uploadAvatar(@RequestParam("file") MultipartFile file) {
+        String fileUrl = sysUserService.uploadAvatar(file);
+        return Result.build(fileUrl, ResultCodeEnum.SUCCESS);
+    }
+
+    @DeleteMapping("/deleteSysUser/{id}")
+    @Operation(summary = "删除系统用户", description = "根据传递的用户 id 进行删除操作，同时删除保存在 Minio 中的头像")
+    public Result deleteSysUser(@PathVariable("id") Long id) {
+        sysUserService.deleteSysUser(id);
+        return Result.build(null, ResultCodeEnum.SUCCESS);
+    }
+
+
 
 }

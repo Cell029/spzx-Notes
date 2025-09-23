@@ -2520,8 +2520,595 @@ void testMinIOFileUpload() throws ServerException, InsufficientDataException, Er
 ```
 
 ****
+#### 2.3.2 将头像上传到 Minio
 
+在初始化 Minio 客户端的时候需要提供 Minio 初始化容器时提供的账号密码（账号密码默认值为 adminminio），还需要提供访问的 URL 和需要使用的桶的名字，
+为了方便后期修改，就把它们写进 application 配置文件中，因此需要使用一个配置类来接收这些数据：
 
+```java
+@Data
+@Component
+@ConfigurationProperties(prefix = "spzx.minio")
+public class MinioProperties {
+    private String accessKey;
+    private String secretKey;
+    private String endpointUrl;
+    private String bucketName;
+}
+```
 
+```yaml
+spzx:
+  minio:
+    access-key: admin
+    secret-key: admin123
+    endpoint-url: http://192.168.149.101:9001
+    bucket-name: spzx-bucket
+```
 
+Minio 客户端的初始化可以用一个配置类来完成，当 Spring 加载时就会自动完成初始化，只需要提供上面的数据即可：
 
+```java
+@Configuration
+public class MinioConfig {
+
+    private final MinioProperties minioProperties;
+
+    // 构造器注入
+    public MinioConfig(MinioProperties minioProperties) {
+        this.minioProperties = minioProperties;
+    }
+
+    // 初始化 MinioClient
+    @Bean
+    public MinioClient minioClient() {
+        return MinioClient.builder()
+                .endpoint(minioProperties.getEndpointUrl())
+                .credentials(minioProperties.getAccessKey(), minioProperties.getSecretKey())
+                .build();
+    }
+
+    // 创建 ApplicationRunner Bean，接收 MinioClient 作为参数，如果没有创建桶则自动进行创建
+    @Bean
+    public ApplicationRunner minioInitializer(MinioClient minioClient) {
+        return args -> {
+            boolean exists = minioClient.bucketExists(
+                    BucketExistsArgs.builder().bucket(minioProperties.getBucketName()).build()
+            );
+            if (!exists) {
+                minioClient.makeBucket(MakeBucketArgs.builder().bucket(minioProperties.getBucketName()).build());
+            }
+            // 设置桶策略为公开读取（download）
+            String policyJson = "{\n" +
+                    "  \"Version\":\"2012-10-17\",\n" +
+                    "  \"Statement\":[{\n" +
+                    "    \"Effect\":\"Allow\",\n" +
+                    "    \"Principal\":\"*\",\n" +
+                    "    \"Action\":[\"s3:GetObject\"],\n" +
+                    "    \"Resource\":[\"arn:aws:s3:::" + minioProperties.getBucketName() + "/*\"]\n" +
+                    "  }]\n" +
+                    "}";
+            minioClient.setBucketPolicy(
+                    io.minio.SetBucketPolicyArgs.builder()
+                            .bucket(minioProperties.getBucketName())
+                            .config(policyJson)
+                            .build()
+            );
+        };
+    }
+}
+```
+
+Controller 层：
+
+浏览器上传文件通常是一个 multipart/form-data 类型的 POST 或 PUT 请求，文件内容在请求体中分片传输，每一片称为 “part”。
+SpringMVC 提供了 MultipartResolver（默认是 StandardServletMultipartResolver），会把请求体里的每个文件 part 封装成一个 MultipartFile 对象。
+所以 Controller 层使用 MultipartFile 是 SpringMVC 对上传文件的抽象，用 MultipartFile 就可以直接操作文件流，不用手动解析 HTTP 请求。
+把接收到的上传文件传递给 Service 层处理后会返回一个 URL　路径，该路径就是存储在　Minio 中的路径，只要 Minio 中的桶的访问权限公开，就可以通过该路径看到具体的图片。
+
+而前端的新增用户和上传头像的功能一般是分为两个请求来完成的，这样就不会因为上传头像的失败而导致整个新增用户功能也失效。当前端点击上传头像按钮后，
+后端处理完请求则会把这个上传成功的头像的存储路径返回给前端，前端拿着这个数据和表单中填写的新增用户的其它数据会一起封装进 SysUser 实体类由后端处理并存入数据库中，
+因此一个新增操作是分为两步完成的，当然修改操作同理。
+
+```java
+@PutMapping("/uploadAvatar")
+@Operation(summary = "上传头像", description = "上传头像到 Minio")
+public Result uploadAvatar(@RequestParam("file") MultipartFile file) {
+    String fileUrl = sysUserService.uploadAvatar(file);
+    return Result.build(fileUrl, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+在执行上传头像操作前，需要先对头像文件的大小和类型进行限制，这里设置的文件最大规格为 2MB，支持的类型为 png、jpeg 等常见图片格式。当然 SpringBoot 默认限制的文件大小为 1MB，
+因此需要手动进行修改一下：
+
+```yaml
+spring:
+  servlet:
+    multipart:
+      max-file-size: 50MB      # 单个文件最大大小
+      max-request-size: 100MB  # 单次请求最大大小（多个文件一起上传时）
+```
+
+接着就是设置文件存储在 Minio 中的路径，通常都是以上传文件的日期作为目录，时间戳和随机字符串作为文件名的，最后返回文件路径时，只需要加上 Minio 的访问地址和桶名即可。
+
+```java
+private static final long MAX_FILE_SIZE = 2 * 1024 * 1024;
+private static final Set<String> ALLOWED = Set.of("image/png", "image/jpeg", "image/jpg", "image/gif");
+
+@Override
+public String uploadAvatar(MultipartFile file) {
+
+    if (file == null || file.isEmpty()) {
+        throw new IllegalArgumentException("文件为空");
+    }
+    if (file.getSize() > MAX_FILE_SIZE) {
+        throw new IllegalArgumentException("文件太大，最大 " + (MAX_FILE_SIZE / 1024 / 1024) + " MB");
+    }
+    String contentType = file.getContentType();
+    if (contentType == null || !ALLOWED.contains(contentType.toLowerCase())) {
+        throw new IllegalArgumentException("不支持的文件类型: " + contentType);
+    }
+
+    // 扩展名
+    String original = file.getOriginalFilename();
+    String ext = "png";
+    // 当原始文件没有后缀时，则默认使用 png，否则使用原始图片的类型
+    if (original != null && original.contains(".")) {
+        ext = original.substring(original.lastIndexOf('.') + 1);
+    }
+
+    // 设置日期目录
+    String datePath = new SimpleDateFormat("yyyy-MM-dd").format(new Date()) + "/";
+    // 时间戳 + 随机数，避免重复
+    String dir = datePath + System.currentTimeMillis() + "_" + UUID.randomUUID().toString().substring(0, 6).replace("_", "") + "." + ext;
+    // 存入桶中的文件最终路径
+    String avatarName = "avatars/" + dir;
+    try (InputStream is = file.getInputStream()) {
+        PutObjectArgs putArgs = PutObjectArgs.builder()
+                .bucket(minioProperties.getBucketName())
+                .object(avatarName)
+                .stream(is, file.getSize(), -1) // partSize(-1 表示 sdk 自己决定)
+                .contentType(file.getContentType()) // 文件类型
+                .build();
+        minioClient.putObject(putArgs);
+    } catch (Exception  e) {
+        throw new RuntimeException(e);
+    }
+
+    // 去掉掉 MinIO 访问地址末尾的 "/"
+    String endpoint = minioProperties.getEndpointUrl().replaceAll("/$", "");
+    String publicUrl = endpoint + "/" + minioProperties.getBucketName() + "/" + avatarName;
+    return publicUrl;
+}
+```
+
+****
+### 2.4 清除 Minio 中的旧头像
+
+毕竟是上传头像到一个存储空间，如果不加以管理删除不再使用的文件，迟早会导致容器爆满无法使用，因此需要定时进行删除操作。而头像这个东西，只要进行了一次更换，
+就可以看作以前的那个头像已经是不再需要的文件了，也就可以进行删除操作了。实现的思路是：当调用上传头像的接口时会把用户当时选择的头像文件保存到 Minio，
+此时给这个头像文件保存在一个临时目录，只有当用户点击保存信息时才把这个头像的 URL 移到最终的目录，并且，点击保存信息按钮时也应该触发删除上一次使用的头像的操作，
+也就是得进行一次查询数据库的操作获取上一次该用户使用的头像的 URL，然后执行 Minio 的 API 进行删除。
+
+修改原始的新增代码，在执行插入数据到数据库前需要检查前端是否发送了头像的 URL 过来，即是否在点击新增按钮前上传了头像到 Minio，如果没有上传头像，那么调用 copyMinioTempToCurrent() 方法返回的就是 null，
+此时就不需要更新前端传递来的 SysUser 中的 avatar 字段，让它保持空的即可；如果调用 copyMinioTempToCurrent() 方法后不为空并接收到了返回的一个新的头像的 URL，
+那么就证明在点击新增保存按钮前就进行了头像的上传操作，此时就需要更新 SysUser 中的 avatar 字段，也就是保存头像的 URL 到数据库。
+
+```java
+@Override
+public void addSysUser(SysUser sysUser) {
+    // 检查传递来的 SysUser 中是否包含头像 URL
+    String currentAvatarUrl = sysUser.getAvatar();
+    String newAvatarUrl = copyMinioTempToCurrent(currentAvatarUrl);
+    if (currentAvatarUrl != null) {
+        sysUser.setAvatar(newAvatarUrl);
+    }
+    // 当 newAvatarUrl 为空时，说明没有进行拷贝，也就是没有进行上传头像的操作，那么存入数据库时使用空的头像 URL　即可（前端未点击上传时即为空）
+    save(sysUser);
+}
+```
+
+```java
+/**
+ * 只有当前用户的头像 URL 是临时路径（也就是刚刚上传了头像），才进行 Minio 中的路径拷贝
+ */
+private String copyMinioTempToCurrent(String currentAvatarUrl) {
+    // 只有新增用户时点击了上传头像再进行路径的转移
+    if (StringUtils.isNotBlank(currentAvatarUrl) && currentAvatarUrl.contains("avatars/temp")) {
+        // 把存储在 Minio 临时目录的头像 URL 保存到固定目录下，同时把固定目录的头像 URL 保存到数据库中
+        String newAvatarUrl = currentAvatarUrl.replace("avatars/temp/", "avatars/use/");
+        String newMinioUrl = getMinioObjectName(newAvatarUrl); // 使用中目录对象
+        String tempMinioUrl = getMinioObjectName(currentAvatarUrl); // 临时目录对象
+        // 进行拷贝操作
+        try {
+            minioClient.copyObject(
+                    CopyObjectArgs.builder()
+                            .bucket(minioProperties.getBucketName())
+                            .object(newMinioUrl)
+                            .source(CopySource.builder()
+                                    .bucket(minioProperties.getBucketName())
+                                    .object(tempMinioUrl)
+                                    .build())
+                            .build()
+            );
+            log.info("成功将临时目录中的头像拷贝到使用中目录：" + newMinioUrl);
+            return newAvatarUrl;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+    return null;
+}
+```
+
+当然这里传递给 Minio API 的头像的 URL 不能是完整的 HTTP，应该是　Minio 中的文件对象，所以获取到前端传递的或者是从数据库中查出来的头像的 URL 都要进行截串操作，
+确保 Minio 能够正常进行拷贝或删除操作。
+
+```text
+http://192.168.149.101:9001/spzx-bucket/avatars/temp/2025-09-23/1758622041077_df4f48.jpg
+endpoint = http://192.168.149.101:9001
+bucketName = spzx-bucket
+oldAvatarUrl = http://192.168.149.101:9001/spzx-bucket/avatars/2025-09-23/123456.png
+```
+
+```java
+/**
+ * 因为删除和拷贝 Minio 中的文件时使用的是对象名，也就是桶中该文件的路径，因此需要从完整的 URL 中进行截串操作
+ *   桶名: spzx-bucket
+ *   对象名: avatars/use/2025-09-23/123456.png
+ */
+@NotNull
+private String getMinioObjectName(String avatarUrl) {
+    // 替换掉 Minio 的前缀地址和桶名，后面的头像存放文件路径即为对象名
+    return avatarUrl.substring(
+            avatarUrl.indexOf(minioProperties.getBucketName())
+                    + minioProperties.getBucketName().length() + 1 // 最后加 1 是用来去掉桶名后的斜杠 "/"
+    );
+}
+```
+
+同理，修改系统用户信息也需要这么操作。不过修改系统用户信息的操作是建立在已经完成添加的用户的基础上的，也就是说当前回显的用户信息可能是包含一个头像 URL 的，
+因此需要判断该 URL 是临时目录下的还是使用中目录下的，为什么这么说呢？因为在点击上传头像按钮调用的那个接口，是把每个上传的头像都直接放在了临时目录下的，
+所以后端接收到头像的 URL 的时候只要判断这个 URL 中是否包含临时目录的字符串即可。如果当前传递给后端的头像的 URL 是临时目录的，那就证明该用户的头像刚刚修改了，
+但此时并没有将数据保存到数据库，因为只有在点击修改或者新增按钮后弹出的表单中点击了保存按钮才会触发数据库的更新操作，因此上传头像到 Minio 的操作不会涉及数据库的修改。
+
+回到正题，在修改系统用户信息时，将前端传递来的头像的 URL 传递给 copyMinioTempToCurrent() 方法，根据该方法的返回值判断是否进行了拷贝操作（即是否更新了头像），
+如果拷贝成功，那么就需要更新 SysUser 的 avatar 字段并更新数据库信息，接着就要执行删除旧头像的操作了。旧头像是保存在使用中目录的，因为按照当前代码的设计来看，
+只要是点击了上传头像并保存信息到数据库，那么头像就会从 Minio 的临时目录拷贝到使用中目录，因此现在的删除操作就是删除使用中目录的头像，那么如何确定要删除哪个呢？
+那就是通过查询数据库中该用户的 avatar 字段是什么了，所以在该方法的一开始就进行了这个查询操作，目的就是为了后续可以通过该 URL 获取到 Minio 中文件的对象名，
+然后进行删除。
+
+```java
+@Override
+@Transactional
+public void updateSysUse(SysUser sysUser) {
+
+    // 先查询旧头像信息
+    SysUser existingUser = getById(sysUser.getId());
+    String oldAvatarUrl = existingUser != null ? existingUser.getAvatar() : null;
+    
+    // 检查传递来的 SysUser 中是否包含头像 URL
+    String currentAvatarUrl = sysUser.getAvatar();
+    String newAvatarUrl = copyMinioTempToCurrent(currentAvatarUrl);
+    
+    // 拷贝成功，证明修改信息时也同时修改了头像（此时传递的头像 URL 就是最新的 URL），那么就要删除旧的头像
+    if (newAvatarUrl != null) {
+        // 更新头像信息
+        sysUser.setAvatar(newAvatarUrl);
+        // 更新数据库
+        updateById(sysUser);
+        // 删除旧的头像
+        if (oldAvatarUrl != null && !oldAvatarUrl.contains("avatars/temp")) {
+            String deleteAvatarUrl = getMinioObjectName(oldAvatarUrl);
+            try {
+                minioClient.removeObject(RemoveObjectArgs.builder()
+                        .bucket(minioProperties.getBucketName())
+                        .object(deleteAvatarUrl) // 因为此时是已经点击了上传新的头像，所以必须查询数据库获取旧的头像的 URL
+                        .build());
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        }
+    }
+}
+```
+
+除了在修改用户头像时会触发删除旧头像的操作，还需要完成删除临时目录的操作，当然该操作不是每次调用完上传头像的接口就开始执行的，因为临时目录中的头像只有在用户完成保存信息后才不具备有效性，
+所以可以设置一个定时任务，在每天的 03:00 进行删除临时目录的操作。这里直接调用 Minio 的 API　获取到指定桶下的指定目录的所有文件，它会被封装成一个迭代器对象，
+里面的每一个元素就是一个文件对象，不过 Minio 的 API 不需要整个文件对象，它只需要桶名和文件对象名即可，所以传值时传递的是 item.objectName()。
+
+```java
+@Service
+public class MinioTempCleaner {
+
+    // 配置 log
+    private static final Logger log = Logger.getLogger(SysUserServiceImpl.class.getName());
+
+    @Autowired
+    private MinioClient minioClient;
+    @Autowired
+    private MinioProperties minioProperties;
+
+    @Scheduled(cron = "0 0 3 * * ?")
+    public void uploadSeckillSkuLatest3Days() throws ServerException, InsufficientDataException, ErrorResponseException, IOException, NoSuchAlgorithmException, InvalidKeyException, InvalidResponseException, XmlParserException, InternalException {
+        log.info("开始扫描 Minio 临时目录！");
+        String bucketName = minioProperties.getBucketName();
+        String tempPrefix = "avatars/temp/";
+        Iterable<Result<Item>> results = minioClient.listObjects(
+                ListObjectsArgs.builder()
+                        .bucket(bucketName)
+                        .prefix(tempPrefix)
+                        .recursive(true) // 递归遍历子目录
+                        .build()
+        );
+        for (Result<Item> result : results) {
+            Item item = result.get();
+            String objectName = item.objectName();
+            log.info("当前文件：" + objectName);
+            log.info("执行删除 Minio 临时目录！");
+            minioClient.removeObject(
+                    RemoveObjectArgs.builder()
+                            .bucket(bucketName)
+                            .object(objectName)
+                            .build()
+            );
+        }
+    }
+}
+```
+
+****
+### 2.5 删除系统用户
+
+删除系统用户很简单，就是调用一下 MybatisPlus 的 remove 方法，在执行删除前查询一下数据库该用户的头像 URL，然后执行删除 Minio 中的文件即可。
+
+Controller 层：
+
+```java
+@DeleteMapping("/deleteSysUser/{id}")
+@Operation(summary = "删除系统用户", description = "根据传递的用户 id 进行删除操作，同时删除保存在 Minio 中的头像")
+public Result deleteSysUser(@PathVariable("id") Long id) {
+    sysUserService.deleteSysUser(id);
+    return Result.build(null, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+```java
+@Override
+@Transactional
+public void deleteSysUser(Long id) {
+    // 根据 id 查询出当前用户的头像 URL，然后删除　Minio　中对应的文件
+    String avatarUrl = getById(id).getAvatar();
+    deleteMinioOldAvatar(avatarUrl);
+    // 删除数据库中的用户信息
+    removeById(id);
+}
+```
+
+因为删除 Minio 中的头像是个重复的代码，因此可以提取出来封装成一个方法：
+
+```java
+private void deleteMinioOldAvatar(String avatarUrl) {
+    if (avatarUrl != null && !avatarUrl.contains("avatars/temp")) {
+        String deleteMinioUrl = getMinioObjectName(avatarUrl);
+        try {
+            minioClient.removeObject(RemoveObjectArgs.builder()
+                    .bucket(minioProperties.getBucketName())
+                    .object(deleteMinioUrl)
+                    .build());
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+}
+```
+
+****
+### 2.6 给系统用户分配角色
+
+#### 2.6.1 查询所有角色
+
+给系统用户分配角色就是在系统用户的边上有个分配角色的按钮，当用户点击"分配角色"按钮的时候，此时就会弹出一个对话框，在该对话框中会展示出来系统中所有的角色信息。
+用户此时就可以选择对应的角色，选择完毕以后，点击确定按钮，此时就需要请求后端接口，将选中的角色数据保存保存到 sys_user_role 表中。因此，在执行分配角色的功能前，
+需要将系统中的所有角色都查询出来，这样才能在对话框中选择给用户分配哪个角色。
+
+Controller 层：
+
+这里没有直接返回一个 List<SysRole> 集合，而是把这个集合封装进 Map 集合，这样前端接收到数据后可以较为直观的知道当前获取或使用的数据是什么。
+
+```java
+@PostMapping("/listAllRole")
+@Operation(summary = "查询所有角色", description = "将查询出的所有角色封装成集合")
+public Result listAllSysRole() {
+    Map<String, List<SysRole>> allSysRole = roleManageService.listAllSysRole();
+    return Result.build(allSysRole, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+```java
+@Override
+public Map<String, List<SysRole>> listAllSysRole() {
+    List<SysRole> sysRoleList = list();
+    Map<String, List<SysRole>> listAllSysRole = new HashMap<>();
+    listAllSysRole.put("allSysRole", sysRoleList);
+    return listAllSysRole;
+}
+```
+
+```json
+{
+  "code": 200,
+  "message": "操作成功",
+  "data": {
+    "allSysRole": [
+      {
+        "id": 9,
+        "createTime": "2023-05-04 10:36:06",
+        "updateTime": "2023-06-02 09:03:31",
+        "isDeleted": 0,
+        "roleName": "平台管理员",
+        "roleCode": "ptgly",
+        "description": "平台管理员"
+      },
+      {
+        "id": 10,
+        "createTime": "2023-05-04 10:36:22",
+        "updateTime": "2023-07-18 08:40:56",
+        "isDeleted": 0,
+        "roleName": "用户管理员",
+        "roleCode": "yhgly",
+        "description": "用户管理员"
+      },
+      ...
+    ]
+  }
+}
+```
+
+****
+#### 2.6.2 关联系统用户和角色
+
+关联系统用户和角色其实就是新增数据到表 sys_user_role 中，该表主要存储 role_id 和 user_id，因此插入数据时也只需要插入这两个。
+
+Controller 层：
+
+前端选中某个用户给他赋予角色时可以选择多个角色，所以后端要接收的数据是一个用户 id 和多个角色 id，那么封装成实体类则为：
+
+```java
+@Data
+@Schema(description = "请求参数实体类")
+public class SysUserAssoRoleDto {
+
+    @Schema(description = "用户id")
+    private Long userId;
+
+    @Schema(description = "角色id的List集合")
+    private List<Long> roleIdList;
+
+}
+```
+
+```java
+@PutMapping("/assignRoles")
+@Operation(summary = "给系统用户分配角色", description = "一个系统用户可以选择多个角色，把它们的关系保存进 sys_user_role 表")
+public Result assignRoles(@RequestBody SysUserAssoRoleDto sysUserAssoRoleDto) {
+    roleUserService.assignRoles(sysUserAssoRoleDto);
+    return Result.build(null, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+该关联操作本质上就是个插入数据的行为，而具体操作的表的对应实体类为：
+
+```java
+@Data
+@TableName("sys_user_role")
+public class SysRoleUser extends BaseEntity {
+    private Long roleId;       // 角色id
+    private Long userId;       // 用户id
+}
+```
+
+不过前端可能传递多个角色 id 过来，所以需要依次遍历并创建多个 SysRoleUser 实体类，最后批量进行插入，但插入前还得删除之前该用户关联的所有角色。
+
+```java
+@Override
+@Transactional
+public void assignRoles(SysUserAssoRoleDto sysUserAssoRoleDto) {
+    // 删除之前关联的所有角色
+    remove(new LambdaQueryWrapper<SysRoleUser>().eq(SysRoleUser::getUserId, sysUserAssoRoleDto.getUserId()));
+    // 再新增新的关联角色
+    List<Long> roleIdList = sysUserAssoRoleDto.getRoleIdList();
+    ArrayList<SysRoleUser> sysRoleUserList = new ArrayList<>();
+    roleIdList.forEach(roleId->{
+        SysRoleUser sysRoleUser = new SysRoleUser();
+        sysRoleUser.setUserId(sysUserAssoRoleDto.getUserId());
+        sysRoleUser.setRoleId(roleId);
+        sysRoleUserList.add(sysRoleUser);
+    });
+    saveBatch(sysRoleUserList);
+}
+```
+
+****
+#### 2.6.3 用户管理角色数据回显
+
+当点击分配角色按钮的时候，除了需要将系统中所有的角色数据查询处理以外，还需要将当前登录用户所对应的角色数据查询出来，
+在进行展示的时候需要用户所具有的角色数据需要是选中的状态。
+
+Controller 层：
+
+当点击用户的分配角色按钮时会传递该用户的 id 给后端，后端就利用这个用户 id 查询 sys_user_role 获取到该用户关联的所有角色的 id 集合，拿到集合后再查询所有的角色信息。
+
+```java
+@GetMapping("/getUserRoleData/{id}")
+@Operation(summary = "回显当前系统用户所属的角色", description = "点击分配按钮时应该展示该用户当前拥有的所有角色")
+public Result getUserRoleData(@PathVariable("id") Integer id) {
+    Map<String, List<SysRole>> userHasRole =  roleUserService.getUserRoleData(id);
+    return Result.build(userHasRole, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+```java
+@Override
+public Map<String, List<SysRole>> getUserRoleData(Integer id) {
+    List<SysRoleUser> sysRoleUserList = list(new LambdaQueryWrapper<SysRoleUser>().eq(SysRoleUser::getUserId, id));
+    // 把当前用户的角色 id 封装成集合
+    List<Long> roleIds = sysRoleUserList.stream().map(SysRoleUser::getRoleId).collect(Collectors.toList());
+    // 执行批量查询
+    List<SysRole> sysRoleList = roleManageService.listByIds(roleIds);
+    HashMap<String, List<SysRole>> userHasRole = new HashMap<>();
+    userHasRole.put("userHasRole", sysRoleList);
+    return userHasRole;
+}
+```
+
+```json
+{
+  "code": 200,
+  "message": "操作成功",
+  "data": {
+    "userHasRole": [
+      {
+        "id": 36,
+        "createTime": "2023-09-03 23:23:04",
+        "updateTime": "2023-09-03 23:23:04",
+        "isDeleted": 0,
+        "roleName": "销售人员",
+        "roleCode": "销售",
+        "description": null
+      },
+      {
+        "id": 37,
+        "createTime": "2023-09-03 23:24:26",
+        "updateTime": "2023-09-04 10:04:17",
+        "isDeleted": 0,
+        "roleName": "测试人员",
+        "roleCode": "test",
+        "description": null
+      },
+      {
+        "id": 38,
+        "createTime": "2023-09-03 23:24:32",
+        "updateTime": "2025-09-22 16:08:17",
+        "isDeleted": 0,
+        "roleName": "开发人员",
+        "roleCode": "dev",
+        "description": null
+      }
+    ]
+  }
+}
+```
+
+****

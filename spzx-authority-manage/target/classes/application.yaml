@@ -36,6 +36,11 @@ spring:
   jackson:
     time-zone: Asia/Shanghai # 时区
 
+  servlet:
+    multipart:
+      max-file-size: 50MB      # 单个文件最大大小
+      max-request-size: 100MB  # 单次请求最大大小（多个文件一起上传时）
+
 springdoc:
   swagger-ui:
     path: /swagger-ui.html
@@ -76,6 +81,14 @@ spzx:
       - /error
       - /role-manage/**
       - /sys_user/**
+      - /roleUser/**
+
+  minio:
+    access-key: admin
+    secret-key: admin123
+    endpoint-url: http://192.168.149.101:9001
+    bucket-name: spzx-bucket
+
 
 
 

@@ -4,14 +4,16 @@ import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
+import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.session.data.redis.config.annotation.web.http.EnableRedisHttpSession;
 
+@EnableScheduling
 @EnableDiscoveryClient
 @EnableRedisHttpSession
 @MapperScan("com.cell.spzx.role_manage.mapper")
 @SpringBootApplication(scanBasePackages = {"com.cell"})
-public class RoleManageApplication {
+public class AuthorityManageApplication {
     public static void main(String[] args) {
-        SpringApplication.run(RoleManageApplication.class, args);
+        SpringApplication.run(AuthorityManageApplication.class, args);
     }
 }

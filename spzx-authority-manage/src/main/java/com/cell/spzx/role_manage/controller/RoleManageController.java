@@ -11,6 +11,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/role-manage")
@@ -28,10 +29,17 @@ public class RoleManageController {
     }
 
     @PostMapping("/listRole")
-    @Operation(summary = "查询所有角色", description = "分页查询所有角色")
+    @Operation(summary = "分页查询所有角色", description = "分页查询所有角色")
     public Result listSysRole(@RequestBody RoleQueryDto  roleQueryDto) {
         PageResult<SysRole> sysRoleByPage = roleManageService.getSysRoleByPage(roleQueryDto);
         return Result.build(sysRoleByPage, ResultCodeEnum.SUCCESS);
+    }
+
+    @PostMapping("/listAllRole")
+    @Operation(summary = "查询所有角色", description = "将查询出的所有角色封装成集合")
+    public Result listAllSysRole() {
+        Map<String, List<SysRole>> allSysRole = roleManageService.listAllSysRole();
+        return Result.build(allSysRole, ResultCodeEnum.SUCCESS);
     }
 
     /*@PostMapping("/listRoleByPageHelper")
