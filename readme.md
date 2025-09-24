@@ -3112,3 +3112,542 @@ public Map<String, List<SysRole>> getUserRoleData(Integer id) {
 ```
 
 ****
+## 3. 菜单管理
+
+菜单管理就是对系统中首页中的左侧菜单进行维护，系统菜单的数据表结构如下，可以看到菜单是一种分级结构的，一个父菜单下可能会有多个子菜单，这里默认规定只存在两级，
+即一个父菜单可以有多个单级的子菜单：
+
+
+| 名称 | 类型 | 长度 | 小数点 | 不是 null | 虚拟 | 键 | 注释 |
+|------|------|------|--------|-----------|------|----|------|
+| id | bigint | ✅ | □ | ✅ | □ | 1 | 编号 |
+| parent_id | bigint | ✅ | □ | ✅ | □ | 1 | 所属上级 |
+| title | varchar | 20 | □ | ✅ | □ | 1 | 菜单标题 |
+| component | varchar | 100 | □ | ✅ | □ | 1 | 组件名称 |
+| sort_value | int | ✅ | □ | □ | □ | 1 | 排序 |
+| status | tinyint | ✅ | □ | □ | □ | 1 | 状态(0.禁止,1:正常) |
+| create_time | timestamp | ✅ | □ | □ | □ | 1 | 创建时间 |
+| update_time | timestamp | ✅ | □ | □ | □ | 1 | 更新时间 |
+| is_deleted | tinyint | ✅ | □ | □ | □ | 1 | 删除标记（0:不可用 1:可用） |
+
+创建与数据库表相对应的实体类：
+
+```java
+@Data
+@TableName("sys_menu")
+@Schema(description = "系统菜单实体类")
+public class SysMenu extends BaseEntity {
+
+	@Schema(description = "父节点id")
+	private Long parentId;
+
+	@Schema(description = "节点标题")
+	private String title;
+
+	@Schema(description = "组件名称")
+	private String component;
+
+	@Schema(description = "排序值")
+	private Integer sortValue;
+
+	@Schema(description = "状态(0:禁止,1:正常)")
+	private Integer status;
+
+	// 下级列表
+    @TableField(exist = false)
+	@Schema(description = "菜单子节点")
+	private List<SysMenu> children;
+
+}
+```
+
+****
+### 3.1 获取菜单列表
+
+Controller 层：
+
+获取菜单列表是在用户进入系统时就会自动触发的，因此不需要传递参数，直接获取所有的菜单信息即可。通过调用 Service 层的方法，将最终的数据封装成一个 List 集合，
+集合中的每个元素都是一个菜单，该元素可能包含子菜单，而子菜单又可能包含下一个子菜单，因此需要用到递归。
+
+```java
+@GetMapping("/selectMenu")
+@Operation(summary = "查询菜单", description = "展示所有的菜单列表")
+public Result getMenu() {
+    List<SysMenu> sysMenuList = sysMenuService.getMenu();
+    return Result.build(sysMenuList, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+这里先查询出 parentId 为 0 的数据，这些数据就是顶级的父菜单，因为它们没有父亲，所以 parentId 设置为 0。接着遍历这些顶级父菜单，依次调用 getChildMenu() 方法，
+这是个递归方法，最终会返回一个封装好 children 字段的顶级父菜单 SysMenu 实体类，接着把这些实体类封装为 List 集合返回给前端即可。
+
+```java
+@Override
+public List<SysMenu> getMenu() {
+    List<SysMenu> sysMenuList = new ArrayList<>();
+    // 查询 parentId 为 0 的数据，这些就是父菜单
+    List<SysMenu> parentMenuList = list(new LambdaQueryWrapper<SysMenu>().eq(SysMenu::getParentId, 0L));
+    for (SysMenu parentMenu : parentMenuList) {
+        SysMenu sysMenu = getChildMenu(parentMenu);
+        sysMenuList.add(sysMenu);
+    }
+    return sysMenuList;
+}
+```
+
+该递归方法就是接收一个父类菜单，然后查询该节点是否有子节点，所以会先查询以传入的节点的 id 作为查询 parentId 条件的数据，如果有这些数据，那就证明传入的该节点是有子节点的，
+那么就可以把查询到的子节点列表赋值给当前传入的节点的 children 字段；如果上一步的赋值操作成功，那么就可以遍历上一步赋值的那些子节点了，也就是依次传入该递归方法，
+判断这些节点是否也有子节点，也就是以它们的 id 作为查询 parentID 的条件，如果能够查到数据，就证明还有，反之则没有，
+直接返回该节点对象（如果有孩子节点，那么返回的就是进行了 parentMenu.setChildren(childrenMenuList) 操作的节点对象）。
+
+```java
+// 父节点传入子节点，再遍历每个子节点获取它的子节点，直到某个节点不再拥有子节点
+private SysMenu getChildMenu(SysMenu parentMenu) {
+    // 获取到父菜单的子菜单，查询那些 parenId 为父菜单 id 的数据
+    // select * from sys_menu where parentId = ?
+    List<SysMenu> childrenMenuList = list(new LambdaQueryWrapper<SysMenu>().eq(SysMenu::getParentId, parentMenu.getId()));
+    if (childrenMenuList != null && !childrenMenuList.isEmpty()) {
+        parentMenu.setChildren(childrenMenuList);
+    }
+    // 如果该节点有孩子节点，那就继续查询该节点的孩子节点，看该节点的孩子节点是否也有孩子节点
+    if (parentMenu.getChildren() != null && !parentMenu.getChildren().isEmpty()) {
+        // 遍历当前节点的子节点是否有子节点，递归调用本方法，只要没有数据的 parentId 为该节点的字节点的 id，那么就结束递归
+        parentMenu.getChildren().forEach(this::getChildMenu);
+    }
+    return parentMenu;
+}
+```
+
+通过接口文档进行测试：
+
+```json
+{
+  "code": 200,
+  "message": "操作成功",
+  "data": [
+    {
+      "id": 1,
+      "createTime": "2023-05-04 10:46:47",
+      "updateTime": "2023-05-06 17:33:53",
+      "isDeleted": 0,
+      "parentId": 0,
+      "title": "系统管理",
+      "component": "system",
+      "sortValue": 1,
+      "status": 1,
+      "children": [
+        {
+          "id": 2,
+          "createTime": "2023-05-04 10:47:13",
+          "updateTime": "2023-05-06 17:33:57",
+          "isDeleted": 0,
+          "parentId": 1,
+          "title": "用户管理",
+          "component": "sysUser",
+          "sortValue": 1,
+          "status": 1,
+          "children": [
+            {
+              "id": 31,
+              "createTime": "2023-05-04 11:42:44",
+              "updateTime": "2023-05-04 11:43:34",
+              "isDeleted": 0,
+              "parentId": 2,
+              "title": "我是用户管理的子菜单，系统管理的三级菜单",
+              "component": null,
+              "sortValue": 1,
+              "status": 1,
+              "children": []
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "createTime": "2023-05-04 10:47:26",
+          "updateTime": "2023-05-06 17:33:58",
+          "isDeleted": 0,
+          "parentId": 1,
+          "title": "菜单管理",
+          "component": "sysMenu",
+          "sortValue": 3,
+          "status": 1,
+          "children": []
+        },
+        ...
+      ]
+    }
+  ]
+}
+```
+
+****
+
+上述代码的写法虽然能获取到正确的数据，但是这种写法有种缺陷，那就是会造成 N + 1 查询问题，什么是 N + 1 查询问题？N + 1 问题就是：1 次查询获取主实体列表，
+N 次查询分别获取每个主实体的关联数据，例如上面的代码写法，先查询一次获得所有顶级父类节点，接着遍历每个父类节点再进行查询以该父类节点的 id 为 parentId 的数据，
+执行几次循环就会执行几次数据库的查询操作，这就大大增加了数据库的开销，因此需要进行一下修改。
+
+这里的修改思路就是，先查询出所有的菜单数据，把它们封装成一个 Map 集合，以每个菜单实体的 parentId 作为 Map 的 key。要想实现这样的一个 Map，就要用到 Stream 的功能，
+它可以将数据进行分组并封装成一个 Map 集合，这里采用的分组条件就是 SysMenu 实体类的 parentId 字段，这样，一个 parentId 就可以代表所有该 id 下的子节点。
+接着把 parentId 和 这个 Map 集合作为条件传递给递归方法，这里传递的 parentId 是 0，也就是先获取出顶级父节点，接着再递归遍历顶级父节点的子节点，
+因此传递的 parentId 为 0 而不是从每个实体类中获取出 id。
+
+至于为什么这样设计，因为如果用 parentId 作为 key，单个 SysMenu 作为 value 的话，那么一个 parentId 就只能代表一个子节点，因为 Map 集合的特性就是 key 不能重复，
+添加重复的 key 就会直接数据覆盖，因此只能封装完整的相同 parentId 的子节点集合；不过，如果用 SysMenu 的 id 字段作为 key 呢？那么就可以一个 id 代表一个 SysMenu，
+但是这中做法就没必要了，因为本身 id 就不可能是一个公共的字段，每个 SysMenu 的 id 都不一样，这样设计和直接封装 SysMenu 为一个 List 没什么区别，
+主要还是利用 parentId 可以代表多个子节点的特性，通过传递一个 parentId 就能获取到所有符合条件的子节点，效率更高。
+
+```java
+@Override
+public List<SysMenu> getMenu() {
+    List<SysMenu> sysMenuList = list();
+    // 让这些菜单集合根据 parenId 进行分组
+    Map<Long, List<SysMenu>> map = sysMenuList.stream().collect(Collectors.groupingBy(SysMenu::getParentId));
+    // 从顶层菜单开始递归，因此先传入的 parentId 为 0
+    return getChildMenu(0L, map);
+}
+```
+
+该递归方法接收一个 parentId 和拥有所有菜单数据的 Map 集合，通过传递来的 parentId 查询该 Map 集合中的 List<SysMenu>，只要获取到的 List<SysMenu> 不为空，
+那么就证明以 parentId 为 id 的 SysMenu 节点是有子节点的，例如第一次传递的 0L，如果查询出了，证明表中是有一级菜单的。接着就是遍历这些节点，获取这些节点的 id，
+把它们的 id 作为下一次递归传递的 parentId，也就是查询这些节点是否有子节点，因为每次递归最后都会返回从 Map 集合中查找的 List<SysMenu>，所以再遍历这些节点的时候，
+可以给它们的 child 字段进行赋值，不管这次递归返回的集合是否有数据都可以进行赋值，如果没数据那么就是一个空集合，代表该节点的递归结束，轮到下一个节点了。
+
+```java
+// 父节点传入子节点，再遍历每个子节点获取它的子节点，直到某个节点不再拥有子节点
+private List<SysMenu> getChildMenu(Long parentId, Map<Long, List<SysMenu>> map) {
+    // 获取父节点下的子节点列表
+    List<SysMenu> childMenuList = map.get(parentId);
+    if (childMenuList != null) {
+        // 获取到父菜单的子菜单，查询那些 parenId 为父菜单 id 的数据
+        for (SysMenu sysMenu : childMenuList) {
+            List<SysMenu> nextChildMenuList = getChildMenu(sysMenu.getId(), map);
+            // 当返回的孩子节点集合不为空，证明当前子节点是有孩子的，所以给它的 children 字段赋值
+            sysMenu.setChildren(nextChildMenuList);
+        }
+    } else {
+        // 当指定的 parentId 下的子节点为空，那么就返回一个空集合，让 menuId 为该 parentId 的 SysMenu 实体类的 children 字段赋值为空集合，
+        // 即代表没有孩子
+        return Collections.emptyList();
+    }
+    // 当孩子节点为空，证明当前 parentId 指向的那个 menuId 就是最小子节点
+    // 因为根据 parentId 查询出的菜单列表为空，所以上一次调用该方法的那个节点的子节点为空，那么就会返回一个空集合
+    return childMenuList;
+}
+```
+
+****
+### 3.2 新增菜单
+
+当用户点击添加按钮的时候，那么此时就会弹出一个对话框，在该对话框中需要展示添加菜单表单。当用户在该表单中点击提交按钮的时候那么此时就需要将表单进行提交，
+在后端需要将提交过来的表单数据保存到数据库中即可。如果添加的是一级菜单，那么传入的 parentId 应该为 0，如果是其余菜单，那么传入的 parentId 应该根据当前操作的那个菜单的 id 为准，
+把它作为 parentId 传递给后端。
+
+Controller 层：
+
+```java
+@PostMapping("/addMenu")
+@Operation(summary = "新增菜单", description = "在 sys_menu 表中插入数据，如果插入的是子菜单，则需要指定父菜单 id")
+public Result addSysMenu(@RequestBody SysMenu sysMenu) {
+    sysMenuService.addSysMenu(sysMenu);
+    return Result.build(null, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+这里判断一下 parentId 是否为空，因为可能新增的菜单为一级菜单，前端不传递数据，那么就需要手动给 SysMenu 的 parentId 字段赋值为 0L，因为该字段的类型为 Long，
+它是一个包装类，默认值为 null。
+
+```java
+@Override
+public void addSysMenu(SysMenu sysMenu) {
+    Long parentId = sysMenu.getParentId();
+    if (parentId == null) {
+        sysMenu.setParentId(0L);
+    }
+    save(sysMenu);
+}
+```
+
+****
+### 3.3 修改菜单
+
+当用户点击修改按钮的时候，那么此时就弹出对话框，在该对话框中需要将当前行所对应的菜单数据在该表单页面进行展示。当用户在该表单中点击提交按钮的时候，
+此时就需要将表单进行提交，在后端需要提交过来的表单数据修改数据库中的即可。
+
+#### 3.3.1 回显数据
+
+Controller 层：
+
+```java
+@GetMapping("/selectMenuById/{id}")
+@Operation(summary = "回显单个菜单数据", description = "修改菜单时需要先回显数据")
+public Result getMenuById(@PathVariable("id") Long id) {
+    SysMenu sysMenu = sysMenuService.getMenuById(id);
+    return Result.build(sysMenu, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+```java
+@Override
+public SysMenu getMenuById(Long id) {
+    return getById(id);
+}
+```
+
+****
+#### 3.3.2 修改菜单
+
+Controller 层：
+
+修改菜单则需要新建一个实体类来封装请求参数，因为前端在修改菜单时有些数据并不会进行修改，例如 parentId 和 children 字段，因此完全可以用一个更简单的实体类来接收数据：
+
+```java
+@Data
+@Schema(description = "封装系统菜单请求参数实体类")
+public class SysMenuDto {
+
+    @Schema(description = "菜单 id")
+    private Long id;
+
+    @Schema(description = "节点标题")
+    private String title;
+
+    @Schema(description = "组件名称")
+    private String component;
+
+    @Schema(description = "排序值")
+    private Integer sortValue;
+
+    @Schema(description = "状态(0:禁止,1:正常)")
+    private Integer status;
+
+}
+```
+
+```java
+@PutMapping("/updateMenu")
+@Operation(summary = "修改菜单", description = "前端表单填写数据后，后端直接进行更新数据库操作")
+public Result updateSysMenu(@RequestBody SysMenuDto sysMenuDto) {
+    sysMenuService.updateSysMenu(sysMenuDto);
+    return Result.build(null, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+MyBatisPlus 的 updateById(id) 方法只会更新那些非空字段，如果字段为空，就不会进行更新，而是保持原有的数据，
+前提是实体类字段没被特殊配置过 @TableField(updateStrategy = FieldStrategy.IGNORED)，当然默认值就是 FieldStrategy.NOT_NULL，就是非空才更新。
+也就是说即使不再字段上标志该注解也能使用。
+
+```java
+@Override
+public void updateSysMenu(SysMenuDto sysMenudto) {
+    SysMenu sysMenu = new SysMenu();
+    BeanUtils.copyProperties(sysMenudto, sysMenu);
+    updateById(sysMenu);
+}
+```
+
+****
+### 3.4 删除菜单
+
+当点击删除按钮的时候此时需要弹出一个提示框，询问是否需要删除数据？如果用户点击是，那么此时向后端发送请求传递 id 参数，后端接收 id 参数进行逻辑删除。
+
+Controller 层：
+
+```java
+@DeleteMapping("/deleteMenu/{id}")
+@Operation(summary = "删除菜单", description = "前端点击删除按钮后，后端接收到该菜单的 id 后对数据库进行修改")
+public Result deleteSysMenu(@PathVariable("id") Long id) {
+    sysMenuService.deleteSysMenu(id);
+    return Result.build(null, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+这里删除的设计是不允许删除具有子节点的菜单，因为这样可以避免一次性丢失太多数据。而这个条件的判断则是查询数据库中以该菜单 id 为 parentId 的数据的条数，
+如果大于 0，证明存在子节点那就不能进行删除。当然还有另一种判断方法，就是通过该 id 查询数据库中的数据获取到该子节点对象，如果不为空，那么就证明有子节点，
+但这种操作性能不够好，因为可能涉及批量查询的操作，并且还要创建一个对象来接收，所以还是采用判断记录条数的方法。
+
+```java
+@Override
+public void deleteSysMenu(Long id) {
+    long count = count(new LambdaQueryWrapper<SysMenu>().eq(SysMenu::getParentId, id));
+    // 如果当前要删除的菜单有子菜单，那么就不能进行删除
+    if (count > 0) {
+        throw new RuntimeException(ResultCodeEnum.NODE_ERROR.getMessage());
+    }
+    removeById(id);
+}
+```
+
+****
+### 3.5 分配菜单
+
+在角色列表页面，当用户点击分配菜单按钮的时候，此时就会弹出一个对话框，在该对话框中会将系统中所涉及到的所有的菜单都展示出来。用户选择对应的菜单以后，点击提交按钮，
+此时请求后端接口，后端将选中的菜单数据保存到 sys_role_menu 表中。前端请求后端接口的时候需要将角色的 id 和用户所选中的菜单 id 传递到后端，
+后端则需要先根据角色的 id 从 sys_role_menu 表中删除该角色之前分配的菜单，然后再新增分配的菜单到 sys_role_menu 表。
+
+数据库表对应实体类：
+
+```java
+@Data
+@TableName("sys_role_menu")
+public class SysRoleMenu extends BaseEntity {
+
+    private Long roleId;       // 角色id
+    private Long menuId;       // 菜单id
+
+}
+```
+
+****
+#### 3.5.1 回显数据
+
+在给某个角色分配菜单时需要先展示该角色上次被分配的那些菜单数据，而后端只需要返回当前角色关联的菜单的 id 即可，前端获取到这些菜单 id 会自动在菜单列表上展示勾选状态。
+
+Controller 层：
+
+```java
+@GetMapping("/getRoleHasMenu/{id}")
+@Operation(summary = "展示当前操作角色当前选中的所有菜单")
+public Result getRoleHasMenu(@PathVariable("id") Long roleId) {
+    List<Long> menuIdList = sysRoleMenuService.getRoleHasMenu(roleId);
+    return Result.build(menuIdList, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+```java
+@Override
+public List<Long> getRoleHasMenu(Long roleId) {
+    List<SysRoleMenu> sysRoleMenuList = list(new LambdaQueryWrapper<SysRoleMenu>().eq(SysRoleMenu::getRoleId, roleId));
+    List<Long> menuIdList = sysRoleMenuList.stream().map(SysRoleMenu::getMenuId).collect(Collectors.toList());
+    return menuIdList;
+}
+```
+
+****
+#### 3.5.2 分配菜单
+
+Controller 层：
+
+前端会传递角色的 id 和选中的菜单的 id 集合，因此封装成一个实体类进行接收：
+
+```java
+@Data
+@Schema(description = "封装前端分配菜单请求参数")
+public class SysRoleMenuDto {
+
+    @Schema(description = "角色 id")
+    private Long roleId;
+
+    @Schema(description = "菜单 id 集合")
+    private List<Long> menuIdList;
+
+}
+```
+
+```java
+@PostMapping("/menuAllocation")
+@Operation(summary = "给某个角色分配菜单", description = "先展示所有的菜单，当选中后将数据添加进数据库并删除旧数据")
+public Result menuAllocation(@RequestBody SysRoleMenuDto sysRoleMenuDto) {
+    sysRoleMenuService.menuAllocation(sysRoleMenuDto);
+    return Result.build(null, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+与给用户分配角色类似，也需要在进行分配的时候删除原来该角色拥有的菜单，然后再插入新的菜单 id 到 sys_role_menu 表。
+
+```java
+@Override
+@Transactional
+public void menuAllocation(SysRoleMenuDto sysRoleMenuDto) {
+    // 先删除数据库中该角色之前被分配的菜单
+    Long roleId = sysRoleMenuDto.getRoleId();
+    remove(new LambdaQueryWrapper<SysRoleMenu>().eq(SysRoleMenu::getRoleId, roleId));
+    // 遍历 menuId，把 roleId 与它进行关联
+    List<SysRoleMenu> sysRoleMenuList = new ArrayList<>();
+    sysRoleMenuDto.getMenuIdList().forEach(menuId -> {
+        SysRoleMenu sysRoleMenu = new SysRoleMenu();
+        sysRoleMenu.setRoleId(roleId);
+        sysRoleMenu.setMenuId(menuId);
+        sysRoleMenuList.add(sysRoleMenu);
+    });
+    saveBatch(sysRoleMenuList);
+}
+```
+
+```text
+系统管理
+ ├── 用户管理
+ ├── 菜单管理
+ └── 角色管理
+```
+
+- 用户只勾选了 用户管理：
+  - 用户管理 = 全选 
+  - 系统管理 = 半选
+
+- 用户勾选了 用户管理 + 菜单管理：
+  - 用户管理 = 全选 
+  - 菜单管理 = 全选
+  - 系统管理 = 半选
+
+- 用户勾选了 用户管理 + 菜单管理 + 角色管理：
+  - 用户管理 = 全选
+  - 菜单管理 = 全选 
+  - 角色管理 = 全选 
+  - 系统管理 = 全选
+
+树控件本身支持 “父节点勾选 -> 子节点全选”，勾选结果直接就是叶子节点，因此后端可以只存叶子节点到数据库，而数据回显时，前端树控件根据叶子节点自动计算父节点半选状态。
+
+****
+### 3.6 动态菜单
+
+当前获取到的菜单列表是所有菜单，但这些菜单数据应该根据当前登录的用户动态展示在左侧，因此需要封装一个对象用来展示当前登录用户的菜单数据：
+
+```java
+@Data
+@Schema(description = "系统菜单响应结果实体类")
+public class SysMenuVo {
+
+    @Schema(description = "系统菜单标题")
+    private String title;
+
+    @Schema(description = "系统菜单名称")
+    private String name;
+
+    @Schema(description = "系统菜单子菜单列表")
+    private List<SysMenuVo> children;
+
+}
+```
+
+Controller 层：
+
+```java
+@GetMapping("/usableMenu/{id}")
+@Operation(summary = "展示某个角色可以使用的菜单", description = "不同角色有不同的功能，因此他们能操控的菜单也不同，需要限制查询条件")
+public Result getUsableMenu(@PathVariable("id") Long roleId) {
+    List<SysMenuVo> usableMenuList = sysRoleMenuService.getUsableMenu(roleId);
+    return Result.build(usableMenuList, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+```java
+
+```
+
+****

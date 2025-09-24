@@ -9,6 +9,9 @@ import java.util.List;
 @Schema(description = "系统菜单响应结果实体类")
 public class SysMenuVo {
 
+    @Schema(description = "菜单ID")
+    private Long id;
+
     @Schema(description = "系统菜单标题")
     private String title;
 
@@ -17,5 +20,8 @@ public class SysMenuVo {
 
     @Schema(description = "系统菜单子菜单列表")
     private List<SysMenuVo> children;
+
+    @Schema(description = "是否选中（叶子节点）")
+    private Boolean checked = false;
 
 }

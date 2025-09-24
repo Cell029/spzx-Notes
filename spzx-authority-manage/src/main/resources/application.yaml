@@ -82,6 +82,8 @@ spzx:
       - /role-manage/**
       - /sys_user/**
       - /roleUser/**
+      - /sysMenu/**
+      - /roleMenu/**
 
   minio:
     access-key: admin

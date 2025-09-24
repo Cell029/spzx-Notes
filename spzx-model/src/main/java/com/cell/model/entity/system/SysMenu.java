@@ -1,13 +1,15 @@
 package com.cell.model.entity.system;
 
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.TableName;
 import com.cell.model.entity.base.BaseEntity;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
-
 import java.util.List;
 
-@Schema(description = "系统菜单实体类")
 @Data
+@TableName("sys_menu")
+@Schema(description = "系统菜单实体类")
 public class SysMenu extends BaseEntity {
 
 	@Schema(description = "父节点id")
@@ -26,7 +28,8 @@ public class SysMenu extends BaseEntity {
 	private Integer status;
 
 	// 下级列表
-	@Schema(description = "子节点")
+    @TableField(exist = false)
+	@Schema(description = "菜单子节点")
 	private List<SysMenu> children;
 
 }
