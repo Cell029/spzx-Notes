@@ -183,6 +183,11 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
     }
 
     @Override
+    public void add(SysUser sysUser) {
+        save(sysUser);
+    }
+
+    @Override
     @Transactional
     public void updateSysUse(SysUser sysUser) {
 

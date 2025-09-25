@@ -20,6 +20,13 @@ public class SysUserController {
     @Autowired
     private SysUserService sysUserService;
 
+    @PostMapping("/add")
+    @Operation(summary = "在用户注册时新增系统用户", description = "当用户注册时在 sys_user 表中插入数据")
+    public Result add(@RequestBody SysUser sysUser) {
+        sysUserService.add(sysUser);
+        return Result.build(null, ResultCodeEnum.SUCCESS);
+    }
+
     @PostMapping("/addSysUser")
     @Operation(summary = "新增系统用户", description = "在 sys_user 表中插入数据，同时将存储在 Minio 中临时目录的头像转移到固定目录")
     public Result addSysUser(@RequestBody SysUser sysUser) {

@@ -6,10 +6,12 @@ import io.minio.MakeBucketArgs;
 import io.minio.MinioClient;
 import jakarta.annotation.PostConstruct;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 @Configuration
+@ConditionalOnProperty(name = "spzx.minio.enabled", havingValue = "true", matchIfMissing = false)
 public class MinioConfig {
 
     private final MinioProperties minioProperties;

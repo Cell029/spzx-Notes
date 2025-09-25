@@ -3,16 +3,15 @@ package com.cell.spzx.auth_server.service.impl;
 import cn.hutool.core.util.StrUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
-import com.cell.model.dto.h5.UserLoginDto;
 import com.cell.model.dto.h5.UserRegisterDto;
 import com.cell.model.entity.system.SysUser;
 import com.cell.model.entity.user.UserInfo;
 import com.cell.model.vo.common.Result;
 import com.cell.model.vo.common.ResultCodeEnum;
+import com.cell.spzx.auth_server.feign.SysUserFeignClient;
 import com.cell.spzx.auth_server.mapper.RegisterMapper;
 import com.cell.spzx.auth_server.service.RegisterService;
 import com.cell.spzx.common.constant.LoginConstant;
-import org.apache.poi.util.StringUtil;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -23,6 +22,9 @@ public class RegisterServiceImpl extends ServiceImpl<RegisterMapper, UserInfo> i
 
     @Autowired
     private StringRedisTemplate stringRedisTemplate;
+
+    @Autowired
+    private SysUserFeignClient sysUserFeignClient;
 
     @Override
     public Result<Boolean> register(UserRegisterDto userRegisterDto) {
@@ -57,6 +59,11 @@ public class RegisterServiceImpl extends ServiceImpl<RegisterMapper, UserInfo> i
         // 满足条件，进行注册
         save(userInfo);
         stringRedisTemplate.delete(LoginConstant.LOGIN_PHONE_CODE_KEY + userInfo.getPhone());
+
+        // 插入数据到 user_info 表的同时插入一条数据到 sys_user
+        SysUser sysUser = new SysUser();
+        BeanUtils.copyProperties(userInfo, sysUser);
+        sysUserFeignClient.add(sysUser);
         return Result.build(true, ResultCodeEnum.SUCCESS.getCode(), ResultCodeEnum.SUCCESS.getMessage());
     }
 

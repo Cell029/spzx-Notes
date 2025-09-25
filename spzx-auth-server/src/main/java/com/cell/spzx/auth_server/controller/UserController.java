@@ -29,4 +29,5 @@ public class UserController {
             return Result.build(null, ResultCodeEnum.LOGIN_AUTH.getCode(), ResultCodeEnum.LOGIN_AUTH.getMessage());
         }
     }
+
 }

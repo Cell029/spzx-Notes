@@ -3616,6 +3616,113 @@ public void menuAllocation(SysRoleMenuDto sysRoleMenuDto) {
 
 当前获取到的菜单列表是所有菜单，但这些菜单数据应该根据当前登录的用户动态展示在左侧，因此需要封装一个对象用来展示当前登录用户的菜单数据：
 
+#### 3.6.1 动态展示 List<SysMenu>
+
+先返回 List<SysMenu> 作为测试，看功能是否能正常返回结果，完成后再编写方法将 List<SysMenu> 转为 List<SysMenuVo>。
+
+Controller 层：
+
+```java
+@GetMapping("/usableMenuWithSySMenu/{id}")
+@Operation(summary = "展示某个角色可以使用的菜单(返回值为 SysMenu 集合)", description = "不同角色有不同的功能，因此他们能操控的菜单也不同，需要限制查询条件")
+public Result getUsableMenuWithSySMenu(@PathVariable("id") Long roleId) {
+    List<SysMenu> usableMenuList = sysRoleMenuService.getUsableMenuWithSySMenu(roleId);
+    return Result.build(usableMenuList, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+首先需要根据当前的角色 id 查询 sys_role_menu 表获取到关联的所有叶子节点菜单 id（因为前端只会传递叶子节点），然后根据这些菜单 id 查询书对应的菜单实体，
+并让它们根据自己的 parentId 进行分组，这样就可以简单的模拟一个节点下的多个子节点的情况。而本接口的主要目的就是通过这些叶子节点菜单构建出一个完整的树形结构，
+也就是从叶子节点逆推出一棵树。所以需要先判断这些叶子节点是否为单独的一棵树，也就是它们没有父也没有子的情况，这种情况下则可以直接让这些叶子节点作为一个完整的 SysMenu 实体。
+其余的情况就需要调用递归方法来逆向构建了。当然，每当从存储这些叶子节点的 Map 集合中拿取数据时，都要把这些数据删掉，这样就可以让它的长度作为停止递归的条件。
+
+```java
+@Override
+public List<SysMenu> getUsableMenuWithSySMenu(Long roleId) {
+    // 查询 sys_role_menu，获取该角色所有的菜单 id
+    List<Long> roleMenuIdList = list(new LambdaQueryWrapper<SysRoleMenu>().eq(SysRoleMenu::getRoleId, roleId)).stream().map(SysRoleMenu::getMenuId).toList();
+    List<SysMenu> sysMenuList = sysMenuService.list(new LambdaQueryWrapper<SysMenu>().in(SysMenu::getId, roleMenuIdList));
+    Map<Long, List<SysMenu>> sameParentIdMenu = sysMenuList.stream().collect(Collectors.groupingBy(SysMenu::getParentId));
+    System.out.println("getUsableMenuWithSySMenu's sameParentIdMenu：" + sameParentIdMenu);
+    List<SysMenu> usableMenuList = new ArrayList<>();
+    // 如果这些子节点的 parentId 为 0，证明这些叶子节点就是一级节点，可以作为一级父节点
+    if (sameParentIdMenu.containsKey(0L)) {
+        usableMenuList.addAll(sameParentIdMenu.get(0L));
+        // 删除一级节点
+        sameParentIdMenu.remove(0L);
+    }
+    List<SysMenu> allMenu = sysMenuService.getAllMenu();
+    usableMenuList.addAll(getParentMenu(allMenu, sameParentIdMenu));
+    return usableMenuList;
+}
+```
+
+这个递归方法以整个菜单和叶子节点为传递参数进行的，从完整的菜单结构开始向下查找它的子节点是否为前端传递来的子节点。因为上面封装 Map 集合时用的是当前叶子节点的 parentId 作为 key 的，
+所以可以用它来判断当前遍历的节点的 id 是否为叶子节点的 parentId，如果是的话，那证明该 key 对应的 value 就是当前遍历的节点的孩子节点，
+当然这种情况是当前节点恰好是叶子节点的上一层节点才行，如果不是的话，还需要继续向下遍历，因此遍历一个节点的时候，还需要判断它有没有孩子节点，如果有孩子节点，
+那么就再判断该孩子节点是否为这些叶子节点的父节点，以此进行递归操作。在进入递归方法的一开始就会创建一个集合，这个集合用来存放找到了叶子节点的那个节点，以此类推，
+最终存放的就是封装好叶子节点的一级节点。当然，在遍历这些节点的时候还需要创建一个集合，它用来存放满足条件的叶子节点，如果该集合为空，证明当前节点不存在前端传递来的叶子节点，
+那么就不需要将该节点返回给前端，也就是不需要把该节点放入递归方法初始时创建的那个集合。
+
+```java
+public List<SysMenu> getParentMenu(List<SysMenu> parentMenuList, Map<Long, List<SysMenu>> sameParentIdMenu) {
+    List<SysMenu> newSysMenuList = new ArrayList<>(); // 新当前节点集合
+    // 新当前节点的孩子节点集合
+    for (SysMenu sysMenu : parentMenuList) {
+        List<SysMenu> newChildSysMenuList = new ArrayList<>();
+        if (sameParentIdMenu.isEmpty()) {
+            return newSysMenuList;
+        }
+        SysMenu newSysMenu = new SysMenu();
+        // 拷贝当前节点主要是为了给新节点赋值新的孩子节点
+        BeanUtils.copyProperties(sysMenu, newSysMenu);
+        Long key = sysMenu.getId();
+        // 如果 map 集合中包含父节点的 Id，那么证明 value 就是这些父节点的孩子节点
+        if (sameParentIdMenu.containsKey(key)) {
+            newChildSysMenuList.addAll(sameParentIdMenu.get(key));
+            sameParentIdMenu.remove(key);
+        }
+        // 判断当前节点是否有孩子节点
+        if (sysMenu.getChildren() != null && !sysMenu.getChildren().isEmpty()) {
+            // 把当前节点的孩子节点传递过去，判断下一层的节点的 id 是否为叶子节点的 parentId
+            List<SysMenu> childMenuList = getParentMenu(sysMenu.getChildren(), sameParentIdMenu);
+            if (childMenuList != null && !childMenuList.isEmpty()) {
+                newChildSysMenuList.addAll(childMenuList);
+            }
+        } else {
+            continue;
+        }
+        if (!newChildSysMenuList.isEmpty()) {
+            // 给当前新节点添加孩子节点
+            newSysMenu.setChildren(newChildSysMenuList);
+            // 把当前新节点添加进集合，准备作为其它节点的孩子节点
+            newSysMenuList.add(newSysMenu);
+        }
+    }
+    return newSysMenuList;
+}
+```
+
+****
+#### 3.6.2 动态展示 List<SysMenuVo>
+
+在上面的 Service 层的方法的最后将 List<SysMenu> 转换成 List<SysMenuVo>，具体的转换则变成成一个方法来处理。
+
+```java
+@Override
+public List<SysMenuVo> getUsableMenu(Long roleId) {
+    ...
+    // 将 List<SysMenu> 转换成 List<SysMenuVo>
+    return usableMenuList.stream().map(this::convertToVo).collect(Collectors.toList());
+}
+```
+
+可以看到当前 SysMenuVo 的 children 字段的类型是 List<SysMenuVo>，而 SysMenu 的 children 字段的类型是 List<SysMenu>，也就是说这次的类型转换是一种嵌套类型的转换，
+因此需要先递归到最底层，将叶子节点转换成 SysMenuVo，等某个节点的孩子节点全部转换成 SysMenuVo 后，也就是该节点的 children 字段变成 List<SysMenuVo> 后就可以结束递归了，
+以此类推，最终所有的节点全部转换成功。
+
 ```java
 @Data
 @Schema(description = "系统菜单响应结果实体类")
@@ -3624,30 +3731,161 @@ public class SysMenuVo {
     @Schema(description = "系统菜单标题")
     private String title;
 
-    @Schema(description = "系统菜单名称")
-    private String name;
+    @Schema(description = "系统菜单组件")
+    private String component;
 
     @Schema(description = "系统菜单子菜单列表")
     private List<SysMenuVo> children;
+    
+}
+```
 
+```java
+private SysMenuVo convertToVo(SysMenu sysMenu) {
+    SysMenuVo sysMenuVo = new SysMenuVo();
+    BeanUtils.copyProperties(sysMenu, sysMenuVo);
+    // 子节点判空处理
+    if (sysMenu.getChildren() != null && !sysMenu.getChildren().isEmpty()) {
+        sysMenuVo.setChildren(
+                sysMenu.getChildren().stream()
+                        .map(this::convertToVo)
+                        .collect(Collectors.toList())
+        );
+    } else {
+        // 子节点为空则存入空集合，避免 stream 遇到 null 报错
+        sysMenuVo.setChildren(new ArrayList<>());
+    }
+    return sysMenuVo;
+}
+```
+
+****
+#### 3.6.3 根据当前登录用户动态展示菜单
+
+因为当前项目引入了 Minio，并且设置了 MinioConfig Bean（放在 common 包），也就是说只要有服务启动就会自动加载这个 Bean，但是认证服务目前不需要用到 Minio，
+并且也没有设置 Minio 的相关配置文件，这就会导致启动认证服务的时候会报错：
+
+```text
+Caused by: java.lang.IllegalArgumentException: endpoint must not be null.
+```
+
+也就是说启动服务时会自动加载 Minio 配置类并尝试初始化 MinioClient，因此需要让认证服务启动时不会加载 Minio 的配置类才行。这里在 Minio 的配置类上加了一个注解，
+使用了 @ConditionalOnProperty 注解的配置类只有当某个配置项满足条件时，这个配置类才会生效，而该配置项的名字是 spzx.minio.enabled，
+它会尝试去读取配置文件中的 spzx.minio.enabled 这个属性，当该属性是 true 时才加载这个配置类，
+而 matchIfMissing = false 表示如果配置文件里根本没有 spzx.minio.enabled 这个属性，就当作条件不成立，不会加载。这就解决了认证服务启动报错的问题，
+不过其它服务要想使用的话，就得在配置文件中写上：spzx.minio.enabled=true。
+
+```java
+@ConditionalOnProperty(name = "spzx.minio.enabled", havingValue = "true", matchIfMissing = false)
+public class MinioConfig {
+}
+```
+
+****
+
+因为用户注册登录时用的表和系统用户管理角色用的表不是同一个，但它们的数据是可以一样的，所以需要在用户注册时将当前用户添加进 sys_user 这张表，而这个操作需要调用权限管理模块，
+因此要用到 OpenFeign 组件进行远程调用，引入相关依赖、确保服务注册到 nacos 并在启动类上添加 @EnableFeignClients：
+
+```xml
+<!-- openfeign -->
+<dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-openfeign</artifactId>
+</dependency>
+
+<!-- loadbalancer -->
+<dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-loadbalancer</artifactId>
+</dependency>
+```
+
+```java
+@FeignClient(name = "spzx-authority-manage")
+public interface SysUserFeignClient {
+    @PostMapping("/sys_user/add")
+    @Operation(summary = "在用户注册时新增系统用户", description = "当用户注册时在 sys_user 表中插入数据")
+    Result add(@RequestBody SysUser sysUser);
+}
+```
+
+接着就是在注册的方法中添加一下远程方法，将该用户的信息保存在 sys_user 表中：
+
+```java
+@Override
+public Result<Boolean> register(UserRegisterDto userRegisterDto) {
+    ...
+    // 插入数据到 user_info 表的同时插入一条数据到 sys_user
+    SysUser sysUser = new SysUser();
+    BeanUtils.copyProperties(userInfo, sysUser);
+    sysUserFeignClient.add(sysUser);
+    return Result.build(true, ResultCodeEnum.SUCCESS.getCode(), ResultCodeEnum.SUCCESS.getMessage());
 }
 ```
 
 Controller 层：
 
+要根据当前登录用户来动态展示菜单，首先就要获取到用户才行，而在认证模块就做了登录功能，当用户登录成功会生成一个 session 并把 userId 存进 session 中，
+而该 session 通过 SpringSession 存放在 Redis 中，可以通过获取到当前请求的 session 后拿到。
+
 ```java
-@GetMapping("/usableMenu/{id}")
-@Operation(summary = "展示某个角色可以使用的菜单", description = "不同角色有不同的功能，因此他们能操控的菜单也不同，需要限制查询条件")
-public Result getUsableMenu(@PathVariable("id") Long roleId) {
-    List<SysMenuVo> usableMenuList = sysRoleMenuService.getUsableMenu(roleId);
-    return Result.build(usableMenuList, ResultCodeEnum.SUCCESS);
+@GetMapping("/getDynamicMenu")
+@Operation(summary = "根据当前登录用户动态展示数据", description = "通过登录用户查找该用户对应的角色再动态展示菜单")
+public Result getDynamicMenu(HttpServletRequest request) {
+    List<SysMenuVo> dynamicMenu = sysRoleMenuService.getDynamicMenu(request);
+    return Result.build(dynamicMenu, ResultCodeEnum.SUCCESS);
 }
 ```
 
 Service 层：
 
-```java
+首先需要通过远程调用认证模块中的 UserController 获取到当前登录用户的 UserInfo 实体，通过它获取到当前用户的用户名和密码。
 
+```java
+@Service
+@FeignClient(name = "spzx-auth-server")
+public interface UserInfoFeignClient {
+    @GetMapping("/auth-server/user/userInfo")
+    @Operation(summary = "获取用户信息", description = "通过 session 拿到用户 id 再查询数据库")
+    Result<UserInfo> getUserInfo(HttpServletRequest request);
+}
 ```
 
+为什么要获取到当前用户的用户名和密码呢？因为当前用户的信息是保存在两张表中的，一个 user_info，一个 sys_user，它们虽然有同一个有互信息，
+但是该用户在这两张表中的 id 是不同的，而具有唯一性的字段就是用户的用户名和手机号，因为在注册时会对这两个字段的唯一性进行校验，校验通过才会保存进数据库，
+所以也可以利用这两个字段去查找 sys_user 表，获取到该用户在 sys_user 表中的 id 是什么，然后再根据该 id 去查找 sys_user_role 表当前用户关联的角色是什么，
+获取到 roleId 后就可以利用上面写的根据 roleId 获取到菜单的方法来动态展示菜单了。
+
+```java
+@Override
+public List<SysMenuVo> getDynamicMenu(HttpServletRequest request) {
+    // 根据 userId 查找该用户的用户名或手机号，然后再查询 sys_user 获取到 SysUserId
+    Result<UserInfo> result = userInfoFeignClient.getUserInfo(request);
+    UserInfo userInfo = result.getData();
+    if (userInfo != null) {
+        String username = userInfo.getUsername();
+        String phone = userInfo.getPhone();
+        SysUser sysUser = sysUserService.getOne(new LambdaQueryWrapper<SysUser>().eq(SysUser::getUsername, username).eq(SysUser::getPhone, phone));
+        if (sysUser != null) {
+            // 获取到 SysUserId 再查询 sys_user_role 表获取到该用户关联的 roleId
+            Long sysUserId = sysUser.getId();
+            SysRoleUser sysRoleUser = roleUserService.getOne(new LambdaQueryWrapper<SysRoleUser>().eq(SysRoleUser::getRoleId, sysUserId));
+            if (sysRoleUser != null) {
+                Long roleId = sysRoleUser.getRoleId();
+                return getUsableMenu(roleId);
+            }
+        }
+    }
+    return Collections.emptyList();
+}
+```
+
+需要注意的是：浏览器在请求不同端口时，默认不会带上同一个 Session Cookie，如果 SESSION Cookie 不一样，那后端从 HttpSession 里取 userId 也会是空的，
+虽然利用了 SpringSession 将数据存储在了 Redis 中，但是也需要配置了域名共享才能发挥作用，而配置域名就要设置网关让它进行负载均衡，因此目前的代码是不完整的。
+
 ****
+### 4. 配置网关
+
+
+
+

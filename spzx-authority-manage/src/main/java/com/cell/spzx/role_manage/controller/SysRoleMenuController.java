@@ -10,13 +10,10 @@ import com.cell.spzx.role_manage.service.SysMenuService;
 import com.cell.spzx.role_manage.service.SysRoleMenuService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
-
 import java.util.List;
-import java.util.Map;
-
-import static com.fasterxml.jackson.databind.type.LogicalType.Map;
 
 @RestController
 @RequestMapping("/roleMenu")
@@ -34,10 +31,24 @@ public class SysRoleMenuController {
     }
 
     @GetMapping("/usableMenu/{id}")
-    @Operation(summary = "展示某个角色可以使用的菜单", description = "不同角色有不同的功能，因此他们能操控的菜单也不同，需要限制查询条件")
+    @Operation(summary = "展示某个角色可以使用的菜单(返回值为 SysMenuVo 集合)", description = "不同角色有不同的功能，因此他们能操控的菜单也不同，需要限制查询条件")
     public Result getUsableMenu(@PathVariable("id") Long roleId) {
         List<SysMenuVo> usableMenuList = sysRoleMenuService.getUsableMenu(roleId);
         return Result.build(usableMenuList, ResultCodeEnum.SUCCESS);
+    }
+
+    @GetMapping("/usableMenuWithSySMenu/{id}")
+    @Operation(summary = "展示某个角色可以使用的菜单(返回值为 SysMenu 集合)", description = "不同角色有不同的功能，因此他们能操控的菜单也不同，需要限制查询条件")
+    public Result getUsableMenuWithSySMenu(@PathVariable("id") Long roleId) {
+        List<SysMenu> usableMenuList = sysRoleMenuService.getUsableMenuWithSySMenu(roleId);
+        return Result.build(usableMenuList, ResultCodeEnum.SUCCESS);
+    }
+
+    @GetMapping("/getDynamicMenu")
+    @Operation(summary = "根据当前登录用户动态展示数据", description = "通过登录用户查找该用户对应的角色再动态展示菜单")
+    public Result getDynamicMenu(HttpServletRequest request) {
+        List<SysMenuVo> dynamicMenu = sysRoleMenuService.getDynamicMenu(request);
+        return Result.build(dynamicMenu, ResultCodeEnum.SUCCESS);
     }
 
     @PostMapping("/menuAllocation")

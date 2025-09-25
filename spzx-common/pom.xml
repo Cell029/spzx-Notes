@@ -91,6 +91,18 @@
             <version>8.5.7</version>
         </dependency>
 
+        <!-- openfeign -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-openfeign</artifactId>
+        </dependency>
+
+        <!-- loadbalancer -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-loadbalancer</artifactId>
+        </dependency>
+
     </dependencies>
 
     <dependencyManagement>

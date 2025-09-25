@@ -1,5 +1,5 @@
-server:
-  port: 12000
+#server:
+#  port: 12000
 
 spring:
 
@@ -24,6 +24,13 @@ spring:
       discovery:
         server-addr: 192.168.149.101:8848  # 服务发现地址
 
+    openfeign:
+      client:
+        config:
+          default:  # 全局默认配置，对所有 Feign 客户端生效
+            connectTimeout: 5000    # 连接超时时间（毫秒）
+            readTimeout: 10000      # 读取超时时间（毫秒）
+
   data:
     redis:
       host: 192.168.149.101
@@ -40,6 +47,7 @@ spring:
     multipart:
       max-file-size: 50MB      # 单个文件最大大小
       max-request-size: 100MB  # 单次请求最大大小（多个文件一起上传时）
+
 
 springdoc:
   swagger-ui:
@@ -69,6 +77,8 @@ mybatis-plus:
       logic-delete-value: 1
       logic-not-delete-value: 0
 
+
+
 spzx:
   auth:
     noAuthUrls:
@@ -90,8 +100,7 @@ spzx:
     secret-key: admin123
     endpoint-url: http://192.168.149.101:9001
     bucket-name: spzx-bucket
-
-
+    enabled: true # 加载 Minio 配置文件
 
 
 

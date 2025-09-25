@@ -20,4 +20,6 @@ public interface SysUserService extends IService<SysUser> {
 
     void deleteSysUser(Long id);
 
+    void add(SysUser sysUser);
+
 }
