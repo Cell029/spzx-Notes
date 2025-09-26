@@ -1,14 +1,19 @@
 package com.cell.model.entity.product;
 
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.TableName;
 import com.cell.model.entity.base.BaseEntity;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
-
+import java.io.Serializable;
 import java.util.List;
 
 @Data
+@TableName("category")
 @Schema(description = "分类实体类")
-public class Category extends BaseEntity {
+public class Category extends BaseEntity implements Serializable {
+
+    private static final long serialVersionUID = 1L;
 
 	@Schema(description = "分类名称")
 	private String name;
@@ -25,9 +30,7 @@ public class Category extends BaseEntity {
 	@Schema(description = "排序字段")
 	private Integer orderNum;
 
-	@Schema(description = "是否存在子节点")
-	private Boolean hasChildren;
-
+    @TableField(exist = false)
 	@Schema(description = "子节点List集合")
 	private List<Category> children;
 

@@ -54,7 +54,7 @@ knife4j:
 spzx:
   auth:
     noAuthUrls:
-      - /doc.html            # Knife4j doc 页面
+      - /doc**               # Knife4j doc 页面
       - /swagger-ui.html     # SpringDoc UI 页面
       - /v3/api-docs/**      # JSON 文档接口
       - /swagger-ui/**       # SpringDoc 静态资源

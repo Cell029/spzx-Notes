@@ -9,8 +9,10 @@
         <outputRelativeToContentRoot value="true" />
         <module name="spzx-model" />
         <module name="spzx-common" />
+        <module name="spzx-gateway" />
         <module name="spzx-auth-server" />
         <module name="spzx-authority-manage" />
+        <module name="spzx-product" />
       </profile>
     </annotationProcessing>
     <bytecodeTargetLevel>
@@ -28,8 +30,10 @@
       <module name="spzx-auth-server" options="-parameters" />
       <module name="spzx-authority-manage" options="-parameters" />
       <module name="spzx-common" options="-parameters" />
+      <module name="spzx-gateway" options="-parameters" />
       <module name="spzx-manager" options="" />
       <module name="spzx-model" options="" />
+      <module name="spzx-product" options="-parameters" />
     </option>
   </component>
 </project>

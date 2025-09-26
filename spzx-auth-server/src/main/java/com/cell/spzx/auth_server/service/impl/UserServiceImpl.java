@@ -23,4 +23,9 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, UserInfo> implement
         }
         return null;
     }
+
+    @Override
+    public UserInfo getUserInfoById(Long id) {
+        return getOne(new LambdaQueryWrapper<UserInfo>().eq(UserInfo::getId, id));
+    }
 }

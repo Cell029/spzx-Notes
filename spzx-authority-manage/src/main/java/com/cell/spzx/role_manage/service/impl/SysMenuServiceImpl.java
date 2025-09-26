@@ -83,8 +83,6 @@ public class SysMenuServiceImpl extends ServiceImpl<SysMenuMapper, SysMenu> impl
         removeById(id);
     }
 
-
-
     // 父节点传入子节点，再遍历每个子节点获取它的子节点，直到某个节点不再拥有子节点
     private List<SysMenu> getChildMenu(Long parentId, Map<Long, List<SysMenu>> map) {
         // 获取父节点下的子节点列表

@@ -11,6 +11,8 @@
         <option value="$PROJECT_DIR$/spzx-auth-server/pom.xml" />
         <option value="$PROJECT_DIR$/spzx-role-manage/pom.xml" />
         <option value="$PROJECT_DIR$/spzx-authority-manage/pom.xml" />
+        <option value="$PROJECT_DIR$/spzx-gateway/pom.xml" />
+        <option value="$PROJECT_DIR$/spzx-product/pom.xml" />
       </list>
     </option>
     <option name="ignoredFiles">

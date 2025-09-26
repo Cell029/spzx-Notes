@@ -11,8 +11,8 @@
     <groupId>com.cell</groupId>
     <artifactId>spzx-authority-manage</artifactId>
     <version>0.0.1-SNAPSHOT</version>
-    <name>spzx-role-manage</name>
-    <description>spzx-role-manage</description>
+    <name>spzx-authority-manage</name>
+    <description>spzx-authority-manage</description>
     <url/>
     <licenses>
         <license/>

@@ -62,37 +62,6 @@ public class SysRoleMenuServiceImpl extends ServiceImpl<SysRoleMenuMapper, SysRo
         return menuIdList;
     }
 
-    /*@Override
-    public List<SysMenuVo> getUsableMenu(Long roleId) { // 查询 sys_role_menu
-        List<SysRoleMenu> sysRoleMenuList = list(new LambdaQueryWrapper<SysRoleMenu>().eq(SysRoleMenu::getRoleId, roleId));
-        List<Long> menuIdList = sysRoleMenuList.stream().map(SysRoleMenu::getMenuId).collect(Collectors.toList());
-        // 当前保存的都是叶子节点，即最小层级的菜单，要想展示所有的菜单结构，就需要寻找父节点
-        List<SysMenuVo> sysMenuVoList = new ArrayList<>();
-        for (Long menuId : menuIdList) {
-            SysMenuVo sysMenuVo = new SysMenuVo();
-            SysMenu parentMenu = getParentMenu(menuId);
-            BeanUtils.copyProperties(parentMenu, sysMenuVo);
-            sysMenuVoList.add(sysMenuVo);
-        }
-        return sysMenuVoList;
-    }
-
-    private SysMenu getParentMenu(Long menuId) {
-        SysMenu sysMenu = sysMenuService.getById(menuId);
-        Long parentMenuId = sysMenu.getParentId();
-        // 当前节点是一级菜单
-        if (parentMenuId == 0L) {
-            SysMenu parentMenu = sysMenuService.getOne(new LambdaQueryWrapper<SysMenu>().eq(SysMenu::getParentId, sysMenu.getParentId()));
-            Long menuParentId = parentMenu.getParentId();
-            return parentMenu;
-            return sysMenu;
-        } else {
-            SysMenu parentMenu = sysMenuService.getOne(new LambdaQueryWrapper<SysMenu>().eq(SysMenu::getId, parentMenuId));
-            if (parentMenu == null) {
-                parentMenu.setChildren();
-            }
-        }
-    }*/
 
     @Override
     public List<SysMenuVo> getUsableMenu(Long roleId) {
@@ -157,7 +126,9 @@ public class SysRoleMenuServiceImpl extends ServiceImpl<SysRoleMenuMapper, SysRo
     @Override
     public List<SysMenuVo> getDynamicMenu(HttpServletRequest request) {
         // 根据 userId 查找该用户的用户名或手机号，然后再查询 sys_user 获取到 SysUserId
-        Result<UserInfo> result = userInfoFeignClient.getUserInfo(request);
+        HttpSession session = request.getSession(false);
+        Long userId = (Long) session.getAttribute("userId");
+        Result<UserInfo> result = userInfoFeignClient.getUserInfoById(userId);
         UserInfo userInfo = result.getData();
         if (userInfo != null) {
             String username = userInfo.getUsername();
@@ -166,7 +137,7 @@ public class SysRoleMenuServiceImpl extends ServiceImpl<SysRoleMenuMapper, SysRo
             if (sysUser != null) {
                 // 获取到 SysUserId 再查询 sys_user_role 表获取到该用户关联的 roleId
                 Long sysUserId = sysUser.getId();
-                SysRoleUser sysRoleUser = roleUserService.getOne(new LambdaQueryWrapper<SysRoleUser>().eq(SysRoleUser::getRoleId, sysUserId));
+                SysRoleUser sysRoleUser = roleUserService.getOne(new LambdaQueryWrapper<SysRoleUser>().eq(SysRoleUser::getUserId, sysUserId));
                 if (sysRoleUser != null) {
                     Long roleId = sysRoleUser.getRoleId();
                     return getUsableMenu(roleId);
@@ -211,7 +182,7 @@ public class SysRoleMenuServiceImpl extends ServiceImpl<SysRoleMenuMapper, SysRo
                 newSysMenuList.add(newSysMenu);
             }
         }
-        System.out.println("当前集合数据：" + newSysMenuList);
+        // System.out.println("当前集合数据：" + newSysMenuList);
         return newSysMenuList;
     }
 

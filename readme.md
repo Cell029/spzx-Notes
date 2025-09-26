@@ -3884,7 +3884,731 @@ public List<SysMenuVo> getDynamicMenu(HttpServletRequest request) {
 虽然利用了 SpringSession 将数据存储在了 Redis 中，但是也需要配置了域名共享才能发挥作用，而配置域名就要设置网关让它进行负载均衡，因此目前的代码是不完整的。
 
 ****
-### 4. 配置网关
+### 4. 配置 nginx
+
+#### 4.1 安装
+
+1、创建宿主机目录，准备将 Nginx 容器里的配置文件、静态资源、日志，全部挂载到宿主机目录
+
+```shell
+# 创建宿主机目录
+mkdir -p /root/spzxData/nginx/conf
+mkdir -p /root/spzxData/nginx/conf.d
+mkdir -p /root/spzxData/nginx/html
+mkdir -p /root/spzxData/nginx/logs
+```
+
+2、拷贝 Nginx 容器的默认配置出来，相当于把容器里的 nginx.conf 和 default.conf 拷贝到宿主机，作为初始配置
+
+```shell
+# 拷贝主配置
+docker run --rm nginx cat /etc/nginx/nginx.conf > /root/spzxData/nginx/conf/nginx.conf
+
+# 如果有 default.conf 就拷贝出来
+docker run --rm nginx cat /etc/nginx/conf.d/default.conf > /root/spzxData/nginx/conf.d/default.conf
+```
+
+3、运行时挂载目录
+
+```shell
+docker run -d \
+  -p 80:80 \
+  -v /root/spzxData/nginx/conf/nginx.conf:/etc/nginx/nginx.conf \
+  -v /root/spzxData/nginx/conf.d:/etc/nginx/conf.d \
+  -v /root/spzxData/nginx/html:/usr/share/nginx/html \
+  -v /root/spzxData/nginx/logs:/var/log/nginx \
+  --name nginx \
+  nginx
+```
+
+****
+#### 4.2 自定义域名搭配 nginx 反向代理
+
+Hosts 文件可以把域名映射到某个 IP，通常在 C:\Windows\System32\drivers\etc\hosts，不过需要用管理员身份打开：
+
+```text
+192.168.149.101 auth.spzx.com
+192.168.149.101 authority.spzx.com
+```
+
+例如像这样配置，将虚拟机的 ip 映射为 xxx.spzx.com，当访问 http://xxx.spzx.com 时就相当于访问虚拟机。此时再配置 nginx 的反向代理，
+就可以通过 xxx.spzx.com 访问到本机的 88 端口，也就是配置的网关的端口，然后再由网关转发到各个服务：
+
+```nginx
+server {
+    listen       80;
+    listen  [::]:80;
+    server_name  *.spzx.com;
+
+    #access_log  /var/log/nginx/host.access.log  main;
+
+    location / {
+        # root   /usr/share/nginx/html;
+        # index  index.html index.htm;
+        proxy_set_header Host $host;
+        proxy_pass http://192.168.149.1:88;
+    }
+}
+```
+
+注意：这里配置的 88 端口的地址为 http://192.168.149.1:88，也就是网关运行的机器的 IP + 端口号，Nginx 运行在 Linux 虚拟机的 Docker 容器内，
+192.168.149.1 通常不是 Linux 虚拟机本身的 IP，而是 Windows 本机在虚拟机网络中的 “网关 IP” 或 “宿主机映射 IP”。因此这里写的是这个 ip，
+而不是 192.168.149.101 或者 127.0.0.1，因为这两个 ip 都无法正确连接到 Windows。
+
+****
+### 5. 配置网关
+
+通常前端项目和后端项目是运行在不同端口的，例如：
+
+- 前端项目运行在 http://localhost:8001
+- 网关（后端服务）运行在 http://localhost:88
+
+它们端口不同，因此被视为不同源，浏览器会默认禁止这种跨域请求。但是在过去的项目中，因为使用了 nginx 所以没有出现这种问题，nginx 作为一种反向代理服务器，可以通过配置统一处理跨域请求，
+让浏览器认为请求是同源的：
+
+```nginx
+server {
+    listen       80;
+    listen  [::]:80;
+    server_name  *.spzx.com;
+   
+    location / {
+        # root   /usr/share/nginx/html;
+        # index  index.html index.htm;
+        proxy_set_header Host $host;
+        proxy_pass http://192.168.149.1:88;
+    }
+    # 反向代理 API 请求
+    location /api/ {
+        proxy_pass http://api-server:8080/;  # 转发到真实后端
+    }
+}
+```
+
+而当前的项目并没有使用 nginx，所以必须手动开启全局跨域配置，也就是编写一个配置文件，允许哪些来源、哪些请求头、哪些请求方法可以被放行，在网关中编写：
+
+```java
+@Configuration
+public class CorsConfig {
+    @Bean
+    public CorsWebFilter corsWebFilter() {
+        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        CorsConfiguration corsConfiguration = new CorsConfiguration();
+        // 配置跨域
+        corsConfiguration.addAllowedHeader("*");
+        corsConfiguration.addAllowedMethod("*");
+        corsConfiguration.addAllowedOrigin("*"); // 允许前端发送的请求
+        corsConfiguration.setAllowCredentials(true); // 允许携带 cookie 跨域
+        source.registerCorsConfiguration("/**", corsConfiguration); // 放行所有路径
+        return new CorsWebFilter(source);
+    }
+}
+```
+
+需要注意的是：并不是所有的非同源请求都会被拦截，跨域请求如果使用了：
+
+- GET、HEAD 或 POST
+- POST 的 Content-Type 是：
+- application/x-www-form-urlencoded
+- multipart/form-data text/plain
+- 没有自定义请求头（如 Authorization、Token）
+
+这种情况下，浏览器不会先发 OPTIONS 请求，而是直接发目标请求。其余的请求则会先发一个 OPTIONS 请求（称为预检请求 preflight），然后由服务端返回是否允许跨域，
+若允许，浏览器才会真正发起实际请求（比如 POST）。所以在 gulimall_gateway 中配置 CorsConfig 就是用来处理 OPTIONS 请求的。
+
+```text
+Request URL http://localhost:88/api/sys/login
+Request Method OPTIONS
+Status Code 200 OK
+Remote Address [::1]:88
+Referrer Policy strict-origin-when-cross-origin
+```
+
+因为所有的请求都会先经过网关，所以优先在网关配置全局 CORS 处理。
+
+****
+### 6. 测试根据登录用户自动展示菜单
+
+再测试时发现控制台报错：
+
+```java
+feign.codec.EncodeException: Could not write request: no suitable HttpMessageConverter found for request type [org.apache.catalina.connector.RequestFacade]
+Caused by: java.lang.IllegalArgumentException: No converter found for return value of type: class org.apache.catalina.connector.RequestFacade
+Caused by: java.lang.IllegalStateException: Cannot serialize object of type org.apache.catalina.connector.RequestFacade
+```
+
+它丢出了三个错误，序列化失败、消息转换器找不到和 Feign 编码错误，而导致这些错误的原因就是之前写的那个远程查询当前用户信息的代码：
+
+```java
+@Service
+@FeignClient(name = "spzx-auth-server")
+public interface UserInfoFeignClient {
+    @GetMapping("/auth-server/user/userInfo")
+    @Operation(summary = "根据用户 id 获取用户信息")
+    Result<UserInfo> getUserInfo(HttpServlet request);
+}
+```
+
+在远程调用时直接把 HttpServlet 作为请求参数传递过去了，但 Java 是不允许这么做的，HttpServletRequest 包含连接、会话等本地状态信息，它与当前请求线程绑定，
+无法在远程调用中传输，所以才会报错导致根本查不到用户信息。那就只能通过 session 获取到当前 userId 后再传递 userId 查询 userInfo 了：
+
+```java
+@Service
+@FeignClient(name = "spzx-auth-server")
+public interface UserInfoFeignClient {
+    @GetMapping("/auth-server/user/userInfo/{id}")
+    @Operation(summary = "根据用户 id 获取用户信息")
+    Result<UserInfo> getUserInfoById(@PathVariable("id") Long id);
+}
+```
+
+```java
+@GetMapping("/userInfo/{id}")
+@Operation(summary = "根据用户 id 获取用户信息")
+public Result<UserInfo> getUserInfoById(@PathVariable("id") Long id) {
+    UserInfo userInfo = userService.getUserInfoById(id);
+    if (userInfo != null) {
+        return Result.build(userInfo, ResultCodeEnum.SUCCESS.getCode(), ResultCodeEnum.SUCCESS.getMessage());
+    } else {
+        return Result.build(null, ResultCodeEnum.LOGIN_AUTH.getCode(), ResultCodeEnum.LOGIN_AUTH.getMessage());
+    }
+}
+```
+
+通过访问 http://auth.spzx.com/doc.html 和 http://authority.spzx.com/doc.html 进入两个服务的接口文档，
+现在从这两个接口文档中调试的接口发送的请求不再是 localhost:11000/... 的形式了，而是 authority.spzx.com/...，此时搭配上 SpringSession 的配置：
+
+```java
+@Bean
+public CookieSerializer cookieSerializer() {
+    DefaultCookieSerializer defaultCookieSerializer = new DefaultCookieSerializer();
+    defaultCookieSerializer.setCookieName("SPZX-SESSION"); // 修改默认的 cookie 名
+    // 配置 domain 解决不同服务之间的 cookie 丢失问题
+    defaultCookieSerializer.setDomainName("spzx.com");
+    return defaultCookieSerializer;
+}
+```
+
+就能解决不同端口之间 session 无法共享的问题。但是经过 debug 调试发现，该远程调用的请求会被拦截器拦截，并在控制台打印 "未登录"，说明此时的 session 并没有共享过去，
+通过查看浏览器的请求，发现 session 是空的，这就是之前记录的远程调用丢失请求头的问题，因为使用远程调用时，Spring 会创建一个 Feign 的代理对象来调用远程服务的方法，
+而此时它就是一个新的 HTTP 请求，自然不会携带当前保存在 Redis 中的 session 数据，为了解决这个问题，可以提供一个配置类：
+
+```java
+@Configuration
+public class FeignConfig {
+    @Bean
+    public RequestInterceptor requestInterceptor() {
+        return new RequestInterceptor() {
+            public void apply(RequestTemplate requestTemplate) {
+                // 1. 使用 RequestContextHolder 拿到刚进来的请求数据
+                ServletRequestAttributes requestAttributes = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+                HttpServletRequest request = requestAttributes.getRequest();
+                // 2. 同步请求头信息
+                String cookie = request.getHeader("Cookie");
+                // 3. 给新请求同步老请求的 cookie
+                requestTemplate.header("Cookie", cookie);
+            }
+        };
+    }
+}
+```
+
+先通过认证服务完成登录生成 session，接着再使用权限管理服务文档调用动态展示菜单的接口，成功得到数据：
+
+```json
+{
+  "code": 200,
+  "message": "操作成功",
+  "data": [
+    {
+      "title": "test",
+      "component": "test",
+      "children": []
+    },
+    {
+      "title": "系统管理",
+      "component": "system",
+      "children": [
+        {
+          "title": "菜单管理",
+          "component": "sysMenu",
+          "children": []
+        },
+        {
+          "title": "用户管理",
+          "component": "sysUser",
+          "children": [
+            {
+              "title": "测试菜单",
+              "component": "哈哈哈，我是用户管理的子菜单，系统管理的三级菜单",
+              "children": []
+            }
+          ]
+        },
+        {
+          "title": "角色管理",
+          "component": "sysRole",
+          "children": [
+            {
+              "title": "我是角色管理的子菜单，系统管理的三级菜单",
+              "component": null,
+              "children": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "商品管理",
+      "component": "product",
+      "children": [
+        {
+          "title": "商品规格",
+          "component": "productSpec",
+          "children": []
+        },
+        {
+          "title": "商品列表",
+          "component": "product",
+          "children": []
+        }
+      ]
+    },
+    {
+      "title": "会员管理",
+      "component": "users",
+      "children": [
+        {
+          "title": "会员列表",
+          "component": "userInfo",
+          "children": []
+        }
+      ]
+    },
+    {
+      "title": "订单管理",
+      "component": "order",
+      "children": [
+        {
+          "title": "订单列表",
+          "component": "orderInfo",
+          "children": []
+        },
+        {
+          "title": "订单统计",
+          "component": "orderStatistics",
+          "children": []
+        }
+      ]
+    },
+    {
+      "title": "8",
+      "component": "8",
+      "children": [
+        {
+          "title": "90",
+          "component": "7",
+          "children": [
+            {
+              "title": "9999",
+              "component": "88",
+              "children": []
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+****
+# 四、分类管理
+
+分类管理就是对商品的分类数据进行维护。常见的分类数据：电脑办公、玩具乐器、家居家装、汽车用品...分类数据所对应的表结构如下所示：
+
+| 名称       | 类型      | 长度 | 小数点 | 不是 null | 虚拟 | 键 | 注释                |
+|------------|-----------|------|--------|-----------|------|----|-------------------|
+| id         | bigint    |      |        | ✔️         |      | 🔑 1 | 分类id              |
+| name       | varchar   | 50   |        |           |      |    | 分类名称              |
+| image_url  | varchar   | 200  |        |           |      |    | 图片 URL            |
+| parent_id  | bigint    |      |        |           |      |    | 父分类id             |
+| status     | tinyint   |      |        |           |      |    | 是否显示(0-不显示，1显示)   |
+| order_num  | int       |      |        |           |      |    | 排序                |
+| create_time| timestamp |      |        | ✔️         |      |    | 创建时间              |
+| update_time| timestamp |      |        | ✔️         |      |    | 更新时间              |
+| is_deleted | tinyint   |      |        | ✔️         |      |    | 删除标记 (0:不可用 1:可用) |
+
+需要注意的是：分类数据是具有层级结构的，因此在进行数据展示的时候也可以考虑使用树形结构进行展示，整体与显示菜单列表类似。
+
+****
+## 1. 查询商品三级分类
+
+根据如上数据表结构来看，分类表其实就是对所有的商品进行分类管理，每个商品实体都有一个 parentId 来指向父亲，而一级分类数据的 parentId 为 0，
+通过以 parentId 作为查询条件递归查询数据即可获取到完整的三级分类结构。与之对应的实体类如下，需要注意的是，如果需要存入缓存中，那么就要让该实体类实现序列化，
+否则会因为无法序列化而无法存入 Redis 中。
+
+```java
+@Data
+@TableName("category")
+@Schema(description = "分类实体类")
+public class Category extends BaseEntity implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+	@Schema(description = "分类名称")
+	private String name;
+
+	@Schema(description = "分类图片url")
+	private String imageUrl;
+
+	@Schema(description = "父节点id")
+	private Long parentId;
+
+	@Schema(description = "分类状态: 是否显示[0-不显示，1显示]")
+	private Integer status;
+
+	@Schema(description = "排序字段")
+	private Integer orderNum;
+
+    @TableField(exist = false)
+	@Schema(description = "子节点List集合")
+	private List<Category> children;
+
+}
+```
+
+Controller 层：
+
+```java
+@GetMapping("/getCategory")
+@Operation(summary = "获取商品三级分类")
+public Result getCategory() {
+    List<Category> categoryList = categoryService.getCategory();
+    return Result.build(categoryList, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+先从数据库中查出所有的分类数据，让它们以 parentId 进行分组，得到一个 Map 集合，可以通过一个 key 代表 parentId，value 则代表该 id 的孩子节点。
+
+```java
+@Override
+@Cacheable(value = "category", key = "'Level1Categories'")
+public List<Category> getCategory() {
+    Map<Long, List<Category>> allCategories = list().stream().collect(Collectors.groupingBy(Category::getParentId));
+    return buildTreeCategory(0L, allCategories);
+}
+```
+
+先传入 0L，也就是从一级节点开始查找，然后找它的孩子节点，再找孩子节点的孩子节点，以此类推，递归地进行查找，直到遍历完从数据库中查出的所有分类数据。
+
+```java
+private List<Category> buildTreeCategory(Long parentId, Map<Long, List<Category>> allCategories) {
+    List<Category> categoryList = new ArrayList<>();
+    // 获取 parentId 下的子节点
+    List<Category> childCategoryList = allCategories.get(parentId);
+    if (childCategoryList != null && !childCategoryList.isEmpty()) {
+        for (Category childCategory : childCategoryList) {
+            // 查找是否有以本节点的 id 作为 parentId 的节点
+            List<Category> nextChildCategoryList = buildTreeCategory(childCategory.getId(), allCategories);
+            childCategory.setChildren(nextChildCategoryList);
+            categoryList.add(childCategory);
+        }
+    }
+    return categoryList;
+}
+```
+
+本方法使用了 SpringCache 将数据存入 Redis 中，因此需要配置 SpringCache 的相关配置：
+
+```yaml
+spring:
+  cache:
+    type: redis
+
+  data:
+    redis:
+      host: 192.168.149.101
+      port: 6379
+```
+
+当然，还需要在启动类上添加 @EnableCaching 注解，确保 SpringCache 生效，如果需要确保存入 Redis 的序列化格式为 Json，那么也需要配置一下配置类：
+
+```java
+@Bean
+public RedisCacheConfiguration redisCacheConfiguration() {
+    RedisCacheConfiguration config = RedisCacheConfiguration.defaultCacheConfig();
+    config = config.serializeKeysWith(RedisSerializationContext.SerializationPair.fromSerializer(new StringRedisSerializer()));
+    config = config.serializeValuesWith(RedisSerializationContext.SerializationPair.fromSerializer(new GenericJackson2JsonRedisSerializer()));
+
+    // 让配置文件中的数据生效
+    CacheProperties.Redis redisProperties = cacheProperties.getRedis();
+    if (redisProperties.getTimeToLive() != null) {
+        config = config.entryTtl(redisProperties.getTimeToLive());
+    }
+
+    if (redisProperties.getKeyPrefix() != null) {
+        config = config.prefixCacheNameWith(redisProperties.getKeyPrefix());
+    }
+
+    if (!redisProperties.isCacheNullValues()) {
+        config = config.disableCachingNullValues();
+    }
+
+    if (!redisProperties.isUseKeyPrefix()) {
+        config = config.disableKeyPrefix();
+    }
+    return config;
+}
+```
+
+****
+### 2. EasyExcel
+
+后台管理系统是管理、处理企业业务数据的重要工具，在这样的系统中，数据的导入和导出功能是非常重要的，其主要意义包括以下几个方面：
+
+1. 提高数据操作效率：手动逐条添加或修改数据不仅费时费力，而且容易出错，此时就可以将大量数据从 Excel 等表格软件中导入到系统中时，通过数据导入功能，可以直接将表格中的数据批量导入到系统中，提高了数据操作的效率。 
+2. 实现数据备份与迁移：通过数据导出功能，管理员可以将系统中的数据导出为 Excel 或其他格式的文件，以实现数据备份，避免数据丢失。同时，也可以将导出的数据文件用于数据迁移或其他用途。
+3. 方便企业内部协作：不同部门可能会使用不同的系统或工具进行数据处理，在这种情况下，通过数据导入和导出功能，可以方便地转换和共享数据，促进企业内部协作。
+
+EasyExcel 的使用：
+
+1、添加依赖
+
+```xml
+<!--excel-->
+<dependency>
+  <groupId>com.alibaba</groupId>
+  <artifactId>easyexcel</artifactId>
+  <version>3.3.3</version>
+</dependency>
+```
+
+2、定义一个实体类来封装每一行的数据：
+
+```java
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
+public class CategoryExcelVo {
+    // index = 0 代表 Excel 第 1 列
+	@ExcelProperty(value = "名称" ,index = 0)
+	private String name;
+
+	@ExcelProperty(value = "图片url" ,index = 1)
+	private String imageUrl ;
+
+	@ExcelProperty(value = "上级id" ,index = 2)
+	private Long parentId;
+
+	@ExcelProperty(value = "状态" ,index = 3)
+	private Integer status;
+
+	@ExcelProperty(value = "排序" ,index = 4)
+	private Integer orderNum;
+
+}
+```
+
+3、定义一个监听器，监听解析到的数据
+
+```java
+public class ExcelListener<T> extends AnalysisEventListener<T> {
+
+    private List<T> list = new ArrayList<>();
+
+    // 从第二行开始读取 excel 内容，把每行数据封装到 T 对象中
+    @Override
+    public void invoke(T t, AnalysisContext analysisContext) {
+        list.add(t);
+    }
+
+    public List<T> getList() {
+        return list;
+    }
+
+    // excel解析完毕以后需要执行的代码
+    @Override
+    public void doAfterAllAnalysed(AnalysisContext analysisContext) {
+
+    }
+}
+```
+
+4、编写测试方法
+
+```java
+public class ExcelTest {
+    public static void main(String[] args) {
+        // read();
+        write();
+    }
+
+    public static void read() {
+        // 1. 定义读取 Excel 文件的位置
+        String fileName = "E://01.xlsx";
+        // 2. 调用方法
+        ExcelListener<CategoryExcelVo> excelListener = new ExcelListener();
+        EasyExcel.read(fileName, CategoryExcelVo.class, excelListener).sheet().doRead();
+        List<CategoryExcelVo> list = excelListener.getList();
+        System.out.println(list);
+    }
+
+    public static void write() {
+        List<CategoryExcelVo> list = new ArrayList<>();
+        list.add(new CategoryExcelVo("数码办公", "", 0L, 1, 1));
+        list.add(new CategoryExcelVo("华为手机", "", 1L, 1, 2));
+        EasyExcel.write("E://02.xlsx", CategoryExcelVo.class).sheet("分类数据").doWrite(list);
+    }
+}
+```
+
+****
+#### 2.1 数据导出功能
+
+当用户点击导出按钮的时候，此时将数据库中的所有的分类的数据导出到一个 Excel 文件中，也就是对应的写操作。
+
+Controller 层：
+
+在 EasyExcel 导出数据时，在 Controller 层需要接收 HttpServletResponse，这样就可以直接控制 HTTP 响应，实现文件下载功能，这是文件导出的标准做法。
+并且必须设置返回类型为 void 而不是 Result，因为文件下载响应是二进制的 Excel 数据，不能再用 JSON 格式的 Result 包装。
+
+```java
+@GetMapping(value = "/exportData")
+@Operation(summary = "导出商品三级分类 Excel")
+public void exportData(HttpServletResponse response) {
+    // 1. 设置响应头信息和其它信息
+    // 告诉浏览器这是 Excel 文件
+    response.setContentType("application/vnd.ms-excel");
+    response.setCharacterEncoding("utf-8");
+    // 这里 URLEncoder.encode 可以防止中文乱码 当然和 EasyExcel 没有关系
+    String fileName = URLEncoder.encode("分类数据", StandardCharsets.UTF_8);
+    // 告诉浏览器以下载方式处理，而不是直接打开
+    response.setHeader("Content-disposition", "attachment;filename=" + fileName + ".xlsx");
+    categoryService.exportData(response);
+}
+```
+
+Service 层：
+
+Service 层就是接收到已经处理好的 HttpServletResponse，直接将数据库表中的数据转换成 Excel 并将数据发送给浏览器。
+
+```java
+@Override
+public void exportData(HttpServletResponse response) {
+    // 2. 查询数据库中的数据
+    List<Category> categoryList = list();
+    List<CategoryExcelVo> categoryExcelVoList = new ArrayList<>(categoryList.size());
+    // 将从数据库中查询到的 Category 对象转换成 CategoryExcelVo 对象
+    for (Category category : categoryList) {
+        CategoryExcelVo categoryExcelVo = new CategoryExcelVo();
+        BeanUtils.copyProperties(category, categoryExcelVo);
+        categoryExcelVoList.add(categoryExcelVo);
+    }
+    // 3. 写出数据到浏览器端
+    // 获取 HTTP 响应输出流，数据直接发送给客户端
+    EasyExcel.write(response.getOutputStream(), CategoryExcelVo.class).sheet("分类数据").doWrite(categoryExcelVoList);
+}
+```
+
+****
+#### 2.2 导入功能
+
+当用户点击导入按钮的时候，此时会弹出一个对话框，让用户选择要导入的 Excel 文件，选择后将文件上传到服务端，服务端通过 EasyExcel 解析文件的内容，
+然后将解析的结果存储到 category 表中。
+
+Controller 层：
+
+导入 Excel 的功能就不需要使用 HttpServletResponse 了，但是要用一个 MultipartFile 来接收文件，之前及路过，这个类可以自动封装好 HTTP　请求为一个文件，
+当　Service　层接收到这个封装好的文件后，直接对里面的内容进行处理即可。
+
+```java
+@PostMapping("importData")
+@Operation(summary = "导入商品三级分类 Excel")
+public Result importData(MultipartFile file) {
+    categoryService.importData(file);
+    return Result.build(null, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+Service　层主要就是调用读取方法触发监听器，而创建监听器时需要传入当前　Service 层，因为使用的是　ＭｙｂａｔｉｓＰｌｕｓ，所以可以利用它来进行插入数据到数据库。
+
+```java
+@Override
+public void importData(MultipartFile file) {
+    try {
+        // 传入 CategoryService 到监听器
+        ExcelListener<CategoryExcelVo> excelListener = new ExcelListener<>(this);
+        // 调用 EasyExcel 读取
+        //　把文件当作输入流交给 EasyExcel
+        EasyExcel.read(file.getInputStream(),
+                CategoryExcelVo.class,
+                excelListener).sheet().doRead();
+    } catch (IOException e) {
+        e.printStackTrace();
+    }
+}
+```
+
+监听器才是主要处理　Excel　的地方，每解析一行数据，就把当前的对象放进集合，达到设置的最大记录时就触发存入数据库的操作。
+
+```java
+public class ExcelListener<T> extends AnalysisEventListener<T> {
+    /**
+     * 每隔5条存储数据库，实际使用中可以100条，然后清理list ，方便内存回收
+     */
+    private static final int BATCH_COUNT = 100;
+    /**
+     * 缓存的数据
+     */
+    private List<T> cachedDataList = ListUtils.newArrayListWithExpectedSize(BATCH_COUNT);
+
+    //获取 mapper 对象
+    private CategoryService categoryService;
+
+    public ExcelListener(CategoryService categoryService) {
+        this.categoryService = categoryService;
+    }
+
+    // 每解析一行数据就会调用一次该方法
+    @Override
+    public void invoke(T data, AnalysisContext analysisContext) {
+        cachedDataList.add(data);
+        // 达到 BATCH_COUNT 了，需要去存储一次数据库，防止数据几万条数据在内存，容易 OOM
+        if (cachedDataList.size() >= BATCH_COUNT) {
+            saveData();
+            // 存储完成清理 list
+            cachedDataList = ListUtils.newArrayListWithExpectedSize(BATCH_COUNT);
+        }
+    }
+
+    @Override
+    public void doAfterAllAnalysed(AnalysisContext analysisContext) {
+        // excel　解析完毕以后需要执行的代码
+        // 这里也要保存数据，确保最后遗留的数据也存储到数据库
+        saveData();
+    }
+
+    private void saveData() {
+        // 将 CategoryExcelVo 转换为 Category 实体
+        List<Category> categoryList = cachedDataList.stream()
+                .map(vo -> {
+                    Category category = new Category();
+                    BeanUtils.copyProperties(vo, category);
+                    return category;
+                })
+                .collect(Collectors.toList());
+        categoryService.saveBatch(categoryList);
+    }
+}
+```
+
+****
+
 
 
 

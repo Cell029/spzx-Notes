@@ -1,5 +1,5 @@
 #server:
-#  port: 11000
+#  port: 13000
 
 spring:
 
@@ -11,7 +11,7 @@ spring:
     password: 123
 
   application:
-    name: spzx-auth-server
+    name: spzx-product
 
   config:
     import:
@@ -24,6 +24,15 @@ spring:
       discovery:
         server-addr: 192.168.149.101:8848  # 服务发现地址
 
+    openfeign:
+      client:
+        config:
+          default:  # 全局默认配置，对所有 Feign 客户端生效
+            connectTimeout: 5000    # 连接超时时间（毫秒）
+            readTimeout: 10000      # 读取超时时间（毫秒）
+  cache:
+    type: redis
+
   data:
     redis:
       host: 192.168.149.101
@@ -32,6 +41,16 @@ spring:
   session:
     store-type: redis
     timeout: 30m
+
+  jackson:
+    time-zone: Asia/Shanghai # 时区
+
+  servlet:
+    multipart:
+      max-file-size: 50MB      # 单个文件最大大小
+      max-request-size: 100MB  # 单次请求最大大小（多个文件一起上传时）
+
+
 
 springdoc:
   swagger-ui:
@@ -42,14 +61,26 @@ springdoc:
   api-docs:
     path: /v3/api-docs
   group-configs:
-    - group: 'auth-server' # 这里配置默认分组
+    - group: 'product' # 这里配置默认分组
       paths-to-match: '/**'
-      packages-to-scan: com.cell.spzx.auth_server.controller
+      packages-to-scan: com.cell.spzx.product.controller
 
 knife4j:
   enable: true
   setting:
     language: zh_cn
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true  # 驼峰映射
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl  # SQL 打印
+  global-config:
+    db-config:
+      id-type: auto        # 主键策略
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+
 
 spzx:
   auth:
@@ -61,16 +92,15 @@ spzx:
       - /webjars/**          # webjars 静态资源
       - /favicon.ico         # 点击接口进入文档页面去加载接口信息，同时浏览器也自动请求 /favicon.ico
       - /error
-      - /auth-server/login/loginWithPhoneCode
-      - /auth-server/login/generatePhoneCode
-      - /auth-server/login/login
-      - /auth-server/login/generateRandomCode
-      - /auth-server/login/loginOut # 退出登录接口
-      #- /api/userinfo # 获取用户信息接口
-      - /auth-server/register/register # 注册接口
-      - /auth-server/login/ip
+      - /category/**
 
 
+  minio:
+    access-key: admin
+    secret-key: admin123
+    endpoint-url: http://192.168.149.101:9001
+    bucket-name: spzx-bucket
+    enabled: true # 加载 Minio 配置文件
 
 
 

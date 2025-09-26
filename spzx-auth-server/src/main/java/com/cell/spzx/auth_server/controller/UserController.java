@@ -7,8 +7,10 @@ import com.cell.model.vo.common.ResultCodeEnum;
 import com.cell.spzx.auth_server.service.UserService;
 import io.swagger.v3.oas.annotations.Operation;
 import jakarta.servlet.http.HttpServletRequest;
+import org.simpleframework.xml.Path;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -23,6 +25,17 @@ public class UserController {
     @Operation(summary = "获取用户信息", description = "通过 session 拿到用户 id 再查询数据库")
     public Result<UserInfo> getUserInfo(HttpServletRequest request) {
         UserInfo userInfo = userService.getUserInfo(request);
+        if (userInfo != null) {
+            return Result.build(userInfo, ResultCodeEnum.SUCCESS.getCode(), ResultCodeEnum.SUCCESS.getMessage());
+        } else {
+            return Result.build(null, ResultCodeEnum.LOGIN_AUTH.getCode(), ResultCodeEnum.LOGIN_AUTH.getMessage());
+        }
+    }
+
+    @GetMapping("/userInfo/{id}")
+    @Operation(summary = "根据用户 id 获取用户信息")
+    public Result<UserInfo> getUserInfoById(@PathVariable("id") Long id) {
+        UserInfo userInfo = userService.getUserInfoById(id);
         if (userInfo != null) {
             return Result.build(userInfo, ResultCodeEnum.SUCCESS.getCode(), ResultCodeEnum.SUCCESS.getMessage());
         } else {

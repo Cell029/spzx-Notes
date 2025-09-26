@@ -8,4 +8,6 @@ import jakarta.servlet.http.HttpServletRequest;
 public interface UserService extends IService<UserInfo> {
     UserInfo getUserInfo(HttpServletRequest request);
 
+    UserInfo getUserInfoById(Long id);
+
 }

@@ -13,13 +13,9 @@ public class SessionConfig {
     public CookieSerializer cookieSerializer() {
         DefaultCookieSerializer defaultCookieSerializer = new DefaultCookieSerializer();
         defaultCookieSerializer.setCookieName("SPZX-SESSION"); // 修改默认的 cookie 名
-        // TODO 配置 domain 解决不同服务之间的 cookie 丢失问题
+        // 配置 domain 解决不同服务之间的 cookie 丢失问题
+        defaultCookieSerializer.setDomainName("spzx.com");
         return defaultCookieSerializer;
     }
 
-    @Bean
-    public RedisSerializer<Object> redisSerializer() {
-        // 使用 JSON 序列化 session
-        return new GenericJackson2JsonRedisSerializer();
-    }
 }
