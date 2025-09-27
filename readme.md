@@ -5259,3 +5259,4 @@ public PageResult<CategoryBrand> findByPage(CategoryBrandDto categoryBrandDto) {
 虽然上述代码能实现基本的功能，但却十分冗余且重复，需要优化一下。
 
 ****
+### 5.2 列表查询优化
