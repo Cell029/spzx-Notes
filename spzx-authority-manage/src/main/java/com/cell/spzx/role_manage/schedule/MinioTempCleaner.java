@@ -23,7 +23,7 @@ import java.util.logging.Logger;
 public class MinioTempCleaner {
 
     // 配置 log
-    private static final Logger log = Logger.getLogger(SysUserServiceImpl.class.getName());
+    private static final Logger log = Logger.getLogger(MinioTempCleaner.class.getName());
 
     @Autowired
     private MinioClient minioClient;

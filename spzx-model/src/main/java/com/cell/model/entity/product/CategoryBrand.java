@@ -1,10 +1,13 @@
 package com.cell.model.entity.product;
 
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.TableName;
 import com.cell.model.entity.base.BaseEntity;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
 @Data
+@TableName("category_brand")
 @Schema(description = "分类品牌实体类")
 public class CategoryBrand extends BaseEntity {
 
@@ -14,13 +17,16 @@ public class CategoryBrand extends BaseEntity {
 	@Schema(description = "分类id")
 	private Long categoryId;
 
-	@Schema(description = "分类名称" , required = false)
+    @TableField(exist = false)
+	@Schema(description = "分类名称")
 	private String categoryName;
 
-	@Schema(description = "品牌名称" , required = false)
+    @TableField(exist = false)
+	@Schema(description = "品牌名称")
 	private String brandName;
 
-	@Schema(description = "品牌logo" , required = false)
+    @TableField(exist = false)
+	@Schema(description = "品牌logo")
 	private String logo;
 
 }

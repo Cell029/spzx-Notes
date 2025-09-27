@@ -4608,8 +4608,654 @@ public class ExcelListener<T> extends AnalysisEventListener<T> {
 ```
 
 ****
+## 3. 封装 Minio 工具类
 
+因为设置成工具类了，那么保存文件的路径就不能设置成固定的，要根据每个服务自己要上传的东西而定，例如品牌管理这里上传的就是以 logo 为父目录的情况。
 
+```java
+@Data
+@Component
+@ConfigurationProperties(prefix = "spzx.minio")
+public class MinioProperties {
+    private String accessKey;
+    private String secretKey;
+    private String endpointUrl;
+    private String bucketName;
+    private String region;
+}
+```
 
+```yaml
+spzx:
+  minio:
+    access-key: admin
+    secret-key: admin123
+    endpoint-url: http://192.168.149.101:9001
+    bucket-name: spzx-bucket
+    enabled: true # 加载 Minio 配置文件
+    region: logo
+```
 
+```java
+@Component
+public class MinioUtil {
 
+    // 配置 log
+    private static final Logger log = Logger.getLogger(MinioUtil.class.getName());
+
+    private static final long MAX_FILE_SIZE = 2 * 1024 * 1024;
+    private static final Set<String> ALLOWED = Set.of("image/png", "image/jpeg", "image/jpg", "image/gif");
+
+    @Autowired
+    private MinioClient minioClient;
+    @Autowired
+    private MinioProperties minioProperties;
+
+    // 上传图片文件
+    public String upload(MultipartFile file) {}
+    // 获取文件扩展名
+    public String getExt(MultipartFile file) {}
+    // 将文件从临时目录拷贝到使用中目录
+    public String copyMinioTempToCurrent(String currentUrl) {}
+    // 获取 Minio 对象名
+    public String getMinioObjectName(String url) {}
+    // 批量获取 Minio 对象名
+    public List<String> getBatchMinioObjectName(List<String> urls) {}
+    // 获取指定目录下的所有文件
+    public Iterable<Result<Item>> getResults(String prefix) {}
+    // 删除单个使用中目录下的 Minio 文件
+    public void deleteMinioOldFile(String url) {}
+    // 批量删除指定目录下的 Minion 文件
+    public <T> void deleteBatchMinioFile(T t) {}
+}
+```
+
+在原来编写的方法基础上新增了多个方法，例如批量修改 URL 为 Minio 文件对象名和批量删除 Minio 文件。
+
+1、批量修改 URL　直接利用 stream 批量处理即可
+
+```java
+@NotNull
+public List<String> getBatchMinioObjectName(List<String> urls) {
+    return urls.stream().map(url -> url.substring(
+            url.indexOf(minioProperties.getBucketName())
+                    + minioProperties.getBucketName().length() + 1 // 最后加 1 是用来去掉桶名后的斜杠 "/"
+    )).collect(Collectors.toList());
+}
+```
+
+2、获取指定目录下的所有文件
+
+通过接收一个字符串并和当前服务设置的 region 进行拼接，就能作为 Minio 的某个具体文件路径的前缀路径了，例如 region 为 logo，传入的 prefix 为 /temp，
+那么这个文件路劲前缀就是 logo/temp。
+
+```java
+/**
+ * 获取指定目录下的所有文件
+ * @param prefix 传递指定的前缀名（是哪个目录）
+ */
+public Iterable<Result<Item>> getResults(String prefix) {
+    return minioClient.listObjects(
+            ListObjectsArgs.builder()
+                    .bucket(minioProperties.getBucketName())
+                    .prefix(minioProperties.getRegion() + prefix)
+                    .recursive(true) // 递归遍历子目录
+                    .build()
+    );
+}
+```
+
+3、批量删除
+
+批量删除 Minio 文件则可以使用 Minio 的批量删除 API，只不过在进行批量删除后必须遍历它的结果集。MinioClient.removeObjects(RemoveObjectsArgs) 接收一个 Iterable<DeleteObject>，
+返回的是 Iterable<Result<DeleteError>>，这个返回结果就是用来接收批量删除操作中哪些文件删除失败了，不是删除成功的文件才返回，
+而是每个可能失败的文件都会有一个 DeleteError，成功的文件不会返回错误。每个 Result<DeleteError> 都是懒加载的，必须调用 get() 才能触发实际的删除或拿到异常信息。
+因此不能直接用 Iterable<Result<Item>> 去做 removeObjects，必须先把 Result<Item> 转成 DeleteObject 类型，当然可以选择不进行遍历结果，
+但成功删除的文件不会返回任何信息。
+
+```java
+public void deleteBatchMinioFile(List<String> urls) {
+    if (urls == null || urls.isEmpty()) {
+        log.warning("批量删除文件列表为空");
+        return;
+    }
+    // 批量处理 urls 为 Minio 的存储对象名
+    List<DeleteObject> deleteObjectNames = getBatchMinioObjectName(urls).stream().map(DeleteObject::new).collect(Collectors.toList());
+    // 调用批量删除
+    Iterable<Result<DeleteError>> results = minioClient.removeObjects(
+            RemoveObjectsArgs.builder()
+                    .bucket(minioProperties.getBucketName())
+                    .objects(deleteObjectNames)
+                    .build()
+    );
+    // 必须遍历结果，否则删除可能不会执行
+    int errorCount = 0;
+    for (Result<DeleteError> result : results) {
+        errorCount++;
+        try {
+            DeleteError error = result.get();
+            // 打印错误信息
+            log.log(Level.SEVERE, "MinIO 批量删除失败，文件：" + error.objectName() + "，错误：" + error.message());
+        } catch (Exception e) {
+            log.log(Level.SEVERE, "批量删除 MinIO 文件时发生异常", e);
+        }
+    }
+    log.info("批量删除完成，共处理 " + (deleteObjectNames.size() - errorCount) + " 个文件");
+}
+```
+
+不过当前批量删除存在两种情况，一种是传入完整的文件路径；另一种则是查询 Minio 指定目录下的所有文件，再把这些文件封装好进行删除。所以要对这两种情况进行区分，
+但不管怎么样，最终都需要封装成 List<DeleteObject> 才能进行删除操作。
+
+对上面的批量删除完整路径下的文件进行改造，传递的参数设置成泛型，让它可以接收多种类型的参数。根据上面记录的两种值的类型可以得出：一种为 List<String>；
+一种为 Iterable<Result<Item>>；那么就可以从这两种类型着手，判断当前传入的参数是属于它们两中的哪种，那么就可以写为：
+
+```java
+if (t instanceof List<?>) {
+    
+} else if (t instanceof Iterable){
+    
+}
+```
+
+1) 当传递的参数类型为 List<String> 时
+
+因为是批量删除操作，那么传入的参数肯定是由多条数据封装成一个对象的，所以可以遍历该参数中的每个元素，将它们强转成 String 类型，
+接着调用 getMinioObjectName(String url)（根据完整路径获取 Minio 文件对象名），并把该 Minio 对象封装成 DeleteObject 对象，那么此时就可以把它放进 List<DeleteObject> 集合了。
+
+2) 当传递的参数类型为 Iterable<Result<Item>>
+
+同理，需要遍历该对象中的所有元素，接着对每一个元素进行强转，因为通过 Minio 的 listObjects(ListObjectsArgs) 这个 API 获取到的每个元素的类型为 Result<Item>，
+因此可以把当前遍历的该泛型对象中的每个元素强转成 Result<Item>，再通过该元素（Result<Item>）获取到它的对象名并封装成 DeleteObject。
+
+```java
+/**
+ * 批量删除 Minio 中的文件
+ * @param t 传递值可以为 List<String>（完整路径集合）；或者为 Iterable<Result<Item>>（从 Minio 指定文件夹下遍历出的所有文件）
+ * @param <T>
+ */
+public <T> void deleteBatchMinioFile(T t) {
+    List<DeleteObject> deleteObjects = new ArrayList<>();
+    if (t == null) {
+        log.warning("批量删除文件列表为空");
+        return;
+    }
+    // 如果传递来的是集合，那证明传来的是完整路径的文件 URL
+    if (t instanceof List<?>) {
+        for (Object obj : (List<?>) t) {
+            if (obj instanceof String) {
+                deleteObjects.add(new DeleteObject(getMinioObjectName((String) obj)));
+            }
+        }
+    } else if (t instanceof Iterable) {
+        for (Object obj : (Iterable<?>) t) {
+            if (obj instanceof Result) {
+                Result<Item> resultItem = (Result<Item>) obj;
+                String objectName;
+                try {
+                    objectName = resultItem.get().objectName();
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+                deleteObjects.add(new DeleteObject(objectName));
+            }
+        }
+    }
+    if (!deleteObjects.isEmpty()) {
+        // 调用批量删除
+        Iterable<Result<DeleteError>> results = minioClient.removeObjects(
+                RemoveObjectsArgs.builder()
+                        .bucket(minioProperties.getBucketName())
+                        .objects(deleteObjects)
+                        .build()
+        );
+        // 必须遍历结果，否则删除可能不会执行
+        int errorCount = 0;
+        for (Result<DeleteError> result : results) {
+            errorCount++;
+            try {
+                DeleteError error = result.get();
+                // 打印错误信息
+                log.log(Level.SEVERE, "MinIO 批量删除失败，文件：" + error.objectName() + "，错误：" + error.message());
+            } catch (Exception e) {
+                log.log(Level.SEVERE, "批量删除 MinIO 文件时发生异常", e);
+            }
+        }
+        log.info("批量删除完成，共处理 " + (deleteObjects.size() - errorCount) + " 个文件");
+    } else {
+        log.log(Level.SEVERE, "MinIO 文件为空，无需删除!");
+    }
+}
+```
+
+4、修改定时任务
+
+同理，定时清理临时目录的那个定时任务也需要进行修改，最初是把它写在某个服务中的，不过后续可能有多个服务都会进行图片文件的上传，因此把它写进 common 服务是较为合理的，
+同时给它添加一个分布式锁，当开启了多个不同端口的相同服务时，它们都会定时启动该任务，添加了分布式锁后可以确保只有一个线程会执行删除临时目录的操作（因为存在多个线程同时删除一个目录的情况）。
+
+```java
+@Service
+@EnableScheduling
+public class MinioSchedule {
+
+    // 配置 log
+    private static final Logger log = Logger.getLogger(MinioSchedule.class.getName());
+
+    @Autowired
+    private MinioUtil minioUtil;
+    @Autowired
+    private RedissonClient redissonClient;
+
+    @Scheduled(cron = "0 0 3 * * ?")
+    public void uploadSeckillSkuLatest3Days() throws Exception {
+        log.info("开始扫描 Minio 临时目录！");
+        // 1. 获取分布式锁
+        RLock rLock = redissonClient.getLock("minioDelete-lock");
+        // 2. 加锁
+        boolean isLock = rLock.tryLock(5, 10,TimeUnit.SECONDS); // 最多等待 5s，当锁持有时间 10 分钟自动释放
+        if (!isLock) {
+            log.info("其他实例正在执行 Minio 清理任务，本次任务跳过");
+            return;
+        }
+        try {
+            String tempPrefix = "/temp/";
+            // 遍历获取指定目录下的所有文件
+            Iterable<Result<Item>> results = minioUtil.getResults(tempPrefix);
+            // 批量删除
+            minioUtil.deleteBatchMinioOldFile(results);
+        } finally {
+            rLock.unlock();
+        }
+    }
+}
+```
+
+****
+## 4. 品牌管理
+
+品牌数据所对应的表结构与实体类如下：
+
+| 名称 | 类型 | 长度 | 小数点 | 不是 null | 虚拟 | 键 | 注释 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| id | bigint |  |  | ✔️ |  | 🔑 1 | ID |
+| name | varchar | 100 |  |  |  |  | 品牌名称 |
+| logo | varchar | 255 |  |  |  |  | 品牌图标 |
+| create_time | timestamp |  |  | ✔️ |  |  | 创建时间 |
+| update_time | timestamp |  |  | ✔️ |  |  | 更新时间 |
+| is_deleted | tinyint |  |  | ✔️ |  |  | 删除标记 (0:不可用 1:可用) |
+
+```java
+@Data
+@TableName("brand")
+@Schema(description = "品牌实体类")
+public class Brand extends BaseEntity {
+
+	@Schema(description = "品牌名称")
+	private String name;
+
+	@Schema(description = "品牌logo")
+	private String logo;
+
+}
+```
+
+品牌管理就是对商品的所涉及到的品牌数据进行维护，常见的品牌数据：小米、华为、海尔...也就是对这些数据进行基础的增删改查操作，当然，如果这些品牌有子品牌的存在，那就需要修改表结构了，
+不过这里暂时不涉及。
+
+****
+### 4.1 查询品牌
+
+查询品牌数据则是使用的分页查询，所以需要封装一个分页参数实体类，不过之前设置了一个分页查询基础实体类，因此只需要继承该类再增加一些需要的查询参数即可：
+
+```java
+@Data
+@Schema(description = "分页查询品牌数据请求参数实体类")
+public class BrandQueryDto extends QueryPageDto {
+
+    @Schema(description = "品牌名称")
+    private String name;
+
+}
+```
+
+Controller 层：
+
+```java
+@PostMapping("/listBrandPage")
+@Operation(summary = "分页查询品牌数据")
+public Result listBrandPage(@RequestBody BrandQueryDto brandQueryDto) {
+    PageResult<Brand> brandPageResult = brandService.listBrandPage(brandQueryDto);
+    return Result.build(brandPageResult, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+```java
+@Override
+public PageResult<Brand> listBrandPage(BrandQueryDto brandQueryDto) {
+    LambdaQueryWrapper<Brand> lambdaQueryWrapper = new LambdaQueryWrapper<>();
+    if (brandQueryDto.getName() != null && !brandQueryDto.getName().isEmpty()) {
+        lambdaQueryWrapper.eq(Brand::getName, brandQueryDto.getName());
+    }
+    Page<Brand> page = new Page<>(brandQueryDto.getPage(), brandQueryDto.getSize());
+    Page<Brand> pageResult = page(page, lambdaQueryWrapper);
+    return new PageResult<Brand>(pageResult.getTotal(), pageResult.getPages(), pageResult.getRecords());
+}
+```
+
+****
+### 4.2 新增品牌
+
+Controller 层：
+
+```java
+@PostMapping("/addBrand")
+@Operation(summary = "新增品牌数据")
+public Result addBrand(@RequestBody BrandDto brandDto) {
+    brandService.addBrand(brandDto);
+    return Result.build(null, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+因为新增操作中包含上传品牌 logo 的操作，而上传品牌 logo 是一个单独的请求，只有点击后当前新增操作的请求中才会携带 logo 的 URL（临时目录下的文件 URL），
+而最终需要将 Minio 的 use 目录下的 URL 保存到数据库，因此这里需要调用 MinioUtil 工具类的拷贝方法，该方法会将临时目录下的文件拷贝一份到 use 目录，
+如果临时目录中的文件不存在则会返回 null，以此来判断用户是否点击上传按钮。
+
+```java
+@Override
+public void addBrand(BrandDto brandDto) {
+    // 检查传递来的 BrandDto 中是否包含 Logo URL
+    String currentLogoUrl = brandDto.getLogo();
+    // 将临时目录下的 logo 拷贝到 use 目录，如果返回为空，证明没有上传图片
+    String newLogoUrl = minioUtil.copyMinioTempToCurrent(currentLogoUrl);
+    if (currentLogoUrl != null && newLogoUrl != null) {
+        brandDto.setLogo(newLogoUrl);
+    }
+    // 当 currentLogoUrl 为空时，说明没有进行上传 Logo 的操作，那么存入数据库时使用空的 URL　即可（前端未点击上传时即为空）
+    Brand brand = new Brand();
+    BeanUtils.copyProperties(brandDto, brand);
+    save(brand);
+}
+```
+
+****
+### 4.3 修改品牌
+
+Controller 层：
+
+```java
+@PutMapping("updateBrand")
+@Operation(summary = "修改品牌信息")
+public Result updateBrand(@RequestBody Brand brand) {
+    brandService.updateBrand(brand);
+    return Result.build(null, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+修改品牌操作中最重要的就是判断当前是否上传了新的 logo，如果上传了新的那么就需要将旧的删除。
+
+```java
+@Override
+@Transactional
+public void updateBrand(Brand brand) {
+    String oldLogoUrl = getById(brand.getId()).getLogo();
+    String currentLogoUrl = brand.getLogo();
+    // 当传入的 Logo 不为空时，则需要判断是新增的头像，还是原始的头像
+    if (currentLogoUrl != null) {
+        // 只有 url 中包含临时路径 /temp 才会通过该方法返回修改为使用中路径 /use
+        String newLogoUrl = minioUtil.copyMinioTempToCurrent(currentLogoUrl);
+        // 如果不为空，证明更新了 Logo，那么就要查询数据库删除以前的存放在 /use 中的旧 Logo
+        if (newLogoUrl != null && oldLogoUrl != null) {
+            minioUtil.deleteMinioOldFile(oldLogoUrl);
+            brand.setLogo(newLogoUrl);
+        }
+    }
+    updateById(brand);
+}
+```
+
+****
+### 4.4 删除品牌
+
+Controller 层：
+
+```java
+@DeleteMapping("/deleteBrand")
+@Operation(summary = "删除品牌信息", description = "可以批量删除，也可以单个删除")
+public Result deleteBrand(@RequestBody List<Long> ids) {
+    brandService.deleteBrand(ids);
+    return Result.build(null, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+删除品牌的同时也要删除存在 Minio 中的 logo 文件，这里是批量删除，所以也是批量删除 Minio 文件，但这里是不需要增加分布式锁的，因为每次删除操作都是删除指定的数据，
+也就是说查出的每个元素完整文件 URL 都是不同的，因此就算是多个线程进行删除操作也不会导致误删操作的出现。
+
+```java
+@Override
+@Transactional
+public void deleteBrand(List<Long> ids) {
+    List<Brand> deleteBrandList = list(new LambdaQueryWrapper<Brand>().in(Brand::getId, ids));
+    List<String> logoList = deleteBrandList.stream().map(Brand::getLogo).collect(Collectors.toList());
+    removeBatchByIds(ids);
+    minioUtil.deleteBatchMinioFile(logoList);
+}
+```
+
+****
+## 5. 分类品牌管理
+
+分类品牌管理就是将商品分类的数据和品牌的数据进行关联，分类数据和品牌数据之间的关系是多对多的关系，一个品牌可以有多种商品分类，而一个商品分类也可以由多个品牌同时拥有。
+
+| 名称 | 类型 | 长度 | 小数点 | 不是 null | 虚拟 | 键 | 注释 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| id | bigint |  |  | ✔️ |  | 🔑 1 | ID |
+| brand_id | bigint |  |  |  |  |  | 品牌ID |
+| category_id | bigint |  |  |  |  |  | 分类ID |
+| create_time | timestamp |  |  | ✔️ |  |  | 创建时间 |
+| update_time | timestamp |  |  | ✔️ |  |  | 更新时间 |
+| is_deleted | tinyint |  |  | ✔️ |  |  | 删除标记 (0:不可用 1:可用) |
+
+```java
+@Data
+@TableName("category_brand")
+@Schema(description = "分类品牌实体类")
+public class CategoryBrand extends BaseEntity {
+
+	@Schema(description = "品牌 id")
+	private Long brandId;
+
+	@Schema(description = "商品分类 id") 
+	private Long categoryId;
+
+}
+```
+
+****
+### 5.1 列表查询
+
+如果在搜索表单中选择了某一个品牌以及分类，那么此时就需要按照品牌 id 和分类 id 进行查询，所以它的查询条件有两个，分别是品牌和分类。不过这里是通过下拉列表的方式，
+因此该操作会触发查询所有的请求，然后根据前端选中的数据传递 id。
+
+```java
+@Data
+@Schema(description = "搜索条件实体类")
+public class CategoryBrandDto extends QueryPageDto {
+
+	@Schema(description = "品牌id")
+	private Long brandId;
+
+	@Schema(description = "分类id")
+	private Long categoryId;
+
+}
+```
+
+```java
+@Override
+@Cacheable(value = "allBrand", key = "'getAllBrand'")
+public List<Brand> getAllBrand() {
+    return list();
+}
+```
+
+```java
+@Override
+@Cacheable(value = "allCategory", key = "'getAllCategory'")
+public List<Category> getCategory() {
+    Map<Long, List<Category>> allCategories = list().stream().collect(Collectors.groupingBy(Category::getParentId));
+    return buildTreeCategory(0L, allCategories);
+}
+```
+
+不过返回数据时不可能只展示它们 id，还得展示哪个品牌名关联哪个商品分类名，因此要在实体类上新增一些字段用来展示它们的名字，而这些字段肯定得通过对应 id 查询数据库。
+
+```java
+@Data
+@TableName("category_brand")
+@Schema(description = "分类品牌实体类")
+public class CategoryBrand extends BaseEntity {
+
+	@Schema(description = "品牌id")
+	private Long brandId;
+
+	@Schema(description = "分类id")
+	private Long categoryId;
+
+    @TableField(exist = false)
+	@Schema(description = "分类名称")
+	private String categoryName;
+
+    @TableField(exist = false)
+	@Schema(description = "品牌名称")
+	private String brandName;
+
+    @TableField(exist = false)
+	@Schema(description = "品牌logo")
+	private String logo;
+
+}
+```
+
+Controller 层：
+
+```java
+@PostMapping("/listPage")
+public Result findByPage(@RequestBody CategoryBrandDto CategoryBrandDto) {
+    PageResult<CategoryBrand> categoryBrandPageResult = categoryBrandService.findByPage(CategoryBrandDto);
+    return Result.build(categoryBrandPageResult, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+该查询总共分为四种情况：(1)同时指定商品分类和品牌；(2)什么都不指定；(3)只指定商品分类；(4)只指定品牌。因此得分类讨论。
+
+1) 同时指定商品分类和品牌
+
+这种情况只会查询出空数据或者一条数据，因为商品分类和品牌是互相对应的，两个条件则能确定唯一数据，因此只需要获取到 category_brand 表中的那条记录存在，
+那么就可以通过 categoryId 和 brandId 查询它们的名字 logo 等数据。当然，因为最多一条数据，所以返回的分页数据可以固定写为 1。
+
+2) 什么都不指定
+
+当什么都不指定时，就是查询所有的关联数据，通过查询表获取所有的 id 并查询对应的表即可。
+
+3) 只指定商品分类
+
+这种情况就是确定唯一的 categoryId，那么就可能查询出多条不同 brandId 的数据，所以在遍历这些数据时还得让它们各自查询 brand 表获取 brand 的字段。
+
+4) 只指定品牌
+
+这种情况和上面的类似，只是条件调转了而已。
+
+```java
+@Override
+public PageResult<CategoryBrand> findByPage(CategoryBrandDto categoryBrandDto) {
+    Long brandId = categoryBrandDto.getBrandId();
+    Long categoryId = categoryBrandDto.getCategoryId();
+    if (categoryBrandDto.getBrandId() != null && categoryBrandDto.getCategoryId() != null) {
+        LambdaQueryWrapper<CategoryBrand> cbWrapper = new LambdaQueryWrapper<>();
+        cbWrapper.eq(CategoryBrand::getBrandId, categoryBrandDto.getBrandId());
+        cbWrapper.eq(CategoryBrand::getCategoryId, categoryBrandDto.getCategoryId());
+        List<CategoryBrand> categoryBrandList = new ArrayList<>();
+        CategoryBrand categoryBrand = new CategoryBrand();
+        if (count(cbWrapper) > 0) {
+            String categoryName = categoryService.getById(categoryBrandDto.getCategoryId()).getName();
+            Brand brand = brandService.getById(categoryBrandDto.getBrandId());
+            String brandName = brand.getName();
+            String brandLogo = brand.getLogo();
+            categoryBrand.setCategoryId(categoryBrandDto.getCategoryId());
+            categoryBrand.setBrandId(categoryBrandDto.getBrandId());
+            categoryBrand.setCategoryName(categoryName);
+            categoryBrand.setBrandName(brandName);
+            categoryBrand.setLogo(brandLogo);
+            categoryBrandList.add(categoryBrand);
+            return new PageResult<CategoryBrand>(1, 1, categoryBrandList);
+        }
+    }
+
+    if (categoryBrandDto.getBrandId() == null && categoryBrandDto.getCategoryId() == null) {
+        LambdaQueryWrapper<CategoryBrand> cbWrapper = new LambdaQueryWrapper<>();
+        Page<CategoryBrand> page = new Page<>(categoryBrandDto.getPage(), categoryBrandDto.getSize());
+        Page<CategoryBrand> pageResult = page(page, cbWrapper);
+        return new PageResult<>(pageResult.getTotal(), pageResult.getPages(), pageResult.getRecords());
+    }
+
+    if (categoryBrandDto.getBrandId() != null && categoryBrandDto.getCategoryId() == null) {
+        LambdaQueryWrapper<CategoryBrand> cbWrapper = new LambdaQueryWrapper<CategoryBrand>().eq(CategoryBrand::getBrandId, categoryBrandDto.getBrandId());
+        Page<CategoryBrand> page = new Page<>(categoryBrandDto.getPage(), categoryBrandDto.getSize());
+        Page<CategoryBrand> pageResult = page(page, cbWrapper);
+        List<CategoryBrand> list = pageResult.getRecords();
+        Brand brand = brandService.getById(categoryBrandDto.getBrandId());
+        if (!list.isEmpty()) {
+            List<Long> categoryIds = list.stream().map(CategoryBrand::getCategoryId).collect(Collectors.toList());
+            List<CategoryBrand> categoryBrandList = categoryService.list(new LambdaQueryWrapper<Category>().in(Category::getId, categoryIds))
+                    .stream()
+                    .map(category -> {
+                        CategoryBrand categoryBrand = new CategoryBrand();
+                        categoryBrand.setBrandId(categoryBrandDto.getBrandId());
+                        categoryBrand.setBrandName(brand.getName());
+                        categoryBrand.setLogo(brand.getLogo());
+                        categoryBrand.setCategoryId(category.getId());
+                        categoryBrand.setCategoryName(category.getName());
+                        return categoryBrand;
+                    }).collect(Collectors.toList());
+            return new PageResult<>(pageResult.getTotal(), pageResult.getPages(), categoryBrandList);
+        }
+    }
+    if (categoryBrandDto.getCategoryId() != null && categoryBrandDto.getBrandId() == null) {
+        LambdaQueryWrapper<CategoryBrand> cbWrapper = new LambdaQueryWrapper<CategoryBrand>().eq(CategoryBrand::getCategoryId, categoryBrandDto.getCategoryId());
+        Page<CategoryBrand> page = new Page<>(categoryBrandDto.getPage(), categoryBrandDto.getSize());
+        Page<CategoryBrand> pageResult = page(page, cbWrapper);
+        List<CategoryBrand> list = pageResult.getRecords();
+        Category category = categoryService.getById(categoryBrandDto.getCategoryId());
+        if (!list.isEmpty()) {
+            List<Long> brandIds = list.stream().map(CategoryBrand::getBrandId).collect(Collectors.toList());
+            List<CategoryBrand> categoryBrandList = brandService.list(new LambdaQueryWrapper<Brand>().in(Brand::getId, brandIds))
+                    .stream()
+                    .map(brand -> {
+                        CategoryBrand categoryBrand = new CategoryBrand();
+                        categoryBrand.setBrandId(categoryBrandDto.getBrandId());
+                        categoryBrand.setBrandName(brand.getName());
+                        categoryBrand.setLogo(brand.getLogo());
+                        categoryBrand.setCategoryId(categoryBrandDto.getCategoryId());
+                        categoryBrand.setCategoryName(category.getName());
+                        return categoryBrand;
+                    }).collect(Collectors.toList());
+            return new PageResult<>(pageResult.getTotal(), pageResult.getPages(), categoryBrandList);
+        }
+    }
+    return new PageResult<>();
+}
+```
+
+虽然上述代码能实现基本的功能，但却十分冗余且重复，需要优化一下。
+
+****

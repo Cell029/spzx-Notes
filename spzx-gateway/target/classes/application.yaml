@@ -1,0 +1,41 @@
+#server:
+#  port: 8000
+
+spring:
+  application:
+    name: spzx-gateway
+
+  config:
+    import:
+      - optional:nacos:${spring.application.name}.yaml  # 导入共享配置（常用）
+
+  cloud:
+    nacos:
+      config:
+        server-addr: 192.168.149.101:8848 # 配置中心地址
+      discovery:
+        server-addr: 192.168.149.101:8848  # 服务发现地址
+
+    gateway:
+      routes:
+        - id: nginx_auth_route
+          uri: lb://spzx-auth-server
+          predicates:
+            - Host=auth.spzx.com
+
+        - id: nginx_authority_route
+          uri: lb://spzx-authority-manage
+          predicates:
+            - Host=authority.spzx.com
+
+        - id: nginx_product_route
+          uri: lb://spzx-product
+          predicates:
+            - Host=product.spzx.com
+
+
+
+
+
+
+

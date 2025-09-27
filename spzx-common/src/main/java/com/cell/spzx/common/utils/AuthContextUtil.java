@@ -1,6 +1,5 @@
 package com.cell.spzx.common.utils;
 
-import com.cell.model.entity.system.SysUser;
 
 public class AuthContextUtil {
     // 创建一个 ThreadLocal 对象，用来存储用户 id

@@ -12,4 +12,5 @@ public class MinioProperties {
     private String secretKey;
     private String endpointUrl;
     private String bucketName;
+    private String region;
 }

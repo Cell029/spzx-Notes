@@ -1,10 +1,12 @@
 package com.cell.model.entity.product;
 
+import com.baomidou.mybatisplus.annotation.TableName;
 import com.cell.model.entity.base.BaseEntity;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
 @Data
+@TableName("brand")
 @Schema(description = "品牌实体类")
 public class Brand extends BaseEntity {
 

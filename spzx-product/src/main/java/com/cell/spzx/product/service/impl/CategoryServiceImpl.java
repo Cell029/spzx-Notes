@@ -27,7 +27,7 @@ import java.util.stream.Collectors;
 public class CategoryServiceImpl extends ServiceImpl<CategoryMapper, Category> implements CategoryService {
 
     @Override
-    @Cacheable(value = "category", key = "'Level1Categories'")
+    @Cacheable(value = "allCategory", key = "'getAllCategory'")
     public List<Category> getCategory() {
         Map<Long, List<Category>> allCategories = list().stream().collect(Collectors.groupingBy(Category::getParentId));
         return buildTreeCategory(0L, allCategories);
