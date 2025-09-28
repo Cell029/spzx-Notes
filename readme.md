@@ -5260,3 +5260,705 @@ public PageResult<CategoryBrand> findByPage(CategoryBrandDto categoryBrandDto) {
 
 ****
 ### 5.2 列表查询优化
+
+虽然该查询还是分为四种情况：(1)同时指定商品分类和品牌；(2)什么都不指定；(3)只指定商品分类；(4)只指定品牌。但不需要分类讨乱前端传递的 brandId 和 categoryId 情况，
+因为这两个条件本质上还是控制从 category_brand 表中查询出的数据有哪些，如果每次都详细的判断并进行查询的话，就会造成多次重复的数据库查询操作，效率较低，而且代码重复，
+可读性较差。顺着这个思路就可以先直接分页查询出 Page<CategoryBrand>，然后再获取它的 records 字段得到 List<CategoryBrand> 集合，后续可以对这个集合中的每个元素进行单项赋值。
+
+需要给每个 CategoryBrand 的新增字段进行赋值，那么肯定需要查询对应的 Brand 和 Category 表格，因此需要先通过 List<CategoryBrand> 获取到当前拥有的所有 BrandId 和 CategoryId，
+然后查询出 Brand 和 Category 集合，接着把这两个集合封装成 Map，让它们各自的 Id 作为 key，实体类作为 value。为什么要封装成 Map 呢？在循环遍历 List<CategoryBrand> 时，
+需要对其中的每一个 CategoryBrand 元素进行新增字段的赋值，既然能拿到每个单独的元素，那么就可以获取到该元素已经封装好的 brandId 和 categoryId 字段，
+能拿到这两个 id 那就可以通过数据库查询表格拿到实体类的数据，但是这样就会导致一次赋值涉及两次数据库查询操作，如果当前的 List<CategoryBrand> 有多个呢，
+那么就会导致进行多次的数据库查询。为了避免 N + 1 问题，所以就可以提前查询出涉及到的所有 Brand 和 Category 数据，并让它们用自己的 id 作为标识，
+这样就可以很方便的取出数据了，用一次查询代替 N 次查询。
+
+最终的返回值都是根据分页查询查出的数据而定的，因此不需要分类讨论是返回空值还是一个值，这些 Page 实体类中已经封装好了，没查到数据就返回空。
+
+```java
+// 优化
+@Override
+public PageResult<CategoryBrand> findByPage(CategoryBrandDto categoryBrandDto) {
+    Long brandId = categoryBrandDto.getBrandId();
+    Long categoryId = categoryBrandDto.getCategoryId();
+    Page<CategoryBrand> page = new Page<>(categoryBrandDto.getPage(), categoryBrandDto.getSize());
+    LambdaQueryWrapper<CategoryBrand> cbWrapper = new LambdaQueryWrapper<>();
+    // 前端传递了品牌和商品分类两个条件，那么就可以确定唯一的数据；
+    // 当前端只选择了品牌，那么就可能查询出多个相同品牌的不同商品分类；
+    // 当前端只选择了商品分类，那么就可能查询出多个不同品牌下的同一个商品分类
+    // 所以这里只需要判断一次 brandId 和 categoryId 是否为空，然后增加查询条件查出对应的 Page<CategoryBrand> 对象
+    if (brandId != null && brandId != 0L) {
+        cbWrapper.eq(CategoryBrand::getBrandId, brandId);
+    }
+    if (categoryId != null && categoryId != 0L) {
+        cbWrapper.eq(CategoryBrand::getCategoryId, categoryId);
+    }
+    // 获取分页查询结果
+    Page<CategoryBrand> pageResult = page(page, cbWrapper);
+    List<CategoryBrand> records = pageResult.getRecords();
+    // 通过结果集获取所有 CategoryBrand 中拥有的 brandId 和 categoryId 集合，因为可能存在重复，所以把它们封装成 Set 集合
+    Set<Long> brandIdSet = records.stream().map(CategoryBrand::getBrandId).collect(Collectors.toSet());
+    Set<Long> categoryIdSet = records.stream().map(CategoryBrand::getCategoryId).collect(Collectors.toSet());
+    // 获取到所有相关的 Brand 和 Category
+    List<Brand> brandList = brandService.listByIds(brandIdSet);
+    List<Category> categoryList = categoryService.listByIds(categoryIdSet);
+    // 把 Brand 和 Category 封装成 Map 集合，以各自的 Id 为 key，实体类为 value
+    // 这样后面给 CategoryBrand 对象赋值时就可以直接通过它们的 id 获取到对应的实体类
+    Map<Long, Brand> brandMap = brandList.stream().collect(Collectors.toMap(Brand::getId, brand -> brand));
+    Map<Long, Category> categoryMap = categoryList.stream().collect(Collectors.toMap(Category::getId, category -> category));
+    // 处理分页查询的结果集，给每个 CategoryBrand 对象的新增字段赋值
+    List<CategoryBrand> categoryBrandList = records.stream().map(categoryBrand -> {
+        // 根据 brandId 从 Map 集合中获取到对应的 Brand 实体类，避免多次循环查找数据库
+        Brand brand = brandMap.get(categoryBrand.getBrandId());
+        Category category = categoryMap.get(categoryBrand.getCategoryId());
+        if (brand != null) {
+            categoryBrand.setBrandName(brand.getName());
+            categoryBrand.setLogo(brand.getLogo());
+        }
+        if (category != null) {
+            categoryBrand.setCategoryName(category.getName());
+        }
+        return categoryBrand;
+    }).collect(Collectors.toList());
+    return new PageResult<>(pageResult.getTotal(), pageResult.getSize(), categoryBrandList);
+}
+```
+
+****
+### 5.3 新增品牌、商品分类关联数据
+
+当用户点击添加按钮的时候，那么此时就弹出对话框，在该对话框中需要展示添加分类品牌表单。当用户在该表单中点击提交按钮的时候那么此时就需要将表单进行提交，
+在后端需要将提交过来的表单数据保存到数据库中即可。因为该操作只需要选择品牌和商品分类，不涉及文件上传的操作，因此较为简单。
+
+Controller 层：
+
+```java
+@PostMapping("/add")
+@Operation(summary = "新增商品分类和品牌关联信息")
+public Result add(@RequestBody CategoryBrand categoryBrand) {
+    categoryBrandService.add(categoryBrand);
+    return Result.build(null , ResultCodeEnum.SUCCESS) ;
+}
+```
+
+Service 层：
+
+```java
+@Override
+public void add(CategoryBrand categoryBrand) {
+    save(categoryBrand);
+}
+```
+
+****
+### 5.4 修改
+
+当用户点击修改按钮的时候，那么此时就弹出对话框，在该对话框中需要将当前行所对应的分类品牌数据在该表单页面进行展示。当用户在该表单中点击提交按钮的时候，
+那么此时就需要将表单进行提交，在后端需要提交过来的表单数据修改数据库中的即可。
+
+```java
+@PutMapping("/updateById")
+@Operation(summary = "修改商品分类和品牌关联信息")
+public Result updateById(@RequestBody CategoryBrand categoryBrand) {
+    categoryBrandService.updateById(categoryBrand);
+    return Result.build(null , ResultCodeEnum.SUCCESS) ;
+}
+```
+
+****
+### 5.5 删除
+
+当点击删除按钮的时候前端会向后端发送请求传递 id 参数，后端接收 id 参数进行逻辑删除。当然也可以进行批量删除，接收一个 id 集合即可。
+
+```java
+@DeleteMapping("/delete")
+@Operation(summary = "删除商品分类和品牌关联信息")
+public Result delete(@RequestBody List<Long> ids) {
+    categoryBrandService.delete(ids);
+    return Result.build(null , ResultCodeEnum.SUCCESS) ;
+}
+```
+
+```java
+@Override
+@Transactional(rollbackFor = Exception.class)
+public void delete(List<Long> ids) {
+    removeBatchByIds(ids);
+}
+```
+
+****
+## 6. 商品规格管理
+
+在电商项目中，商品规格指的是商品属性、型号、尺寸、颜色等具体描述商品特点和属性的标准化信息。
+
+* 以手机为例子，它的规格可能包括以下几个方面：
+
+  1. 操作系统：Android、iOS、HarmonyOS 等。 
+  2. 屏幕尺寸：5.5 寸、6.7 寸等。 
+  3. 分辨率：1920x1080、2960x1440、2532x1170 等。 
+  4. 运行内存：6GB、8GB、12GB 等。 
+  5. 存储容量：64GB、128GB、256GB 等。 
+  6. 摄像头：单摄、双摄、四摄等。 
+  7. 电池容量：3500mAh、4500mAh、5000mAh 等。
+
+* 以T恤衫举例子，它的规格可能包括以下几个方面：
+
+  1. 颜色：白色、黑色 
+  2. 尺码：S、M、L、XL、XXL等 
+  3. 款式：圆领、V领、翻领等
+
+数据库中对应的规格参数表结构为 product_spec：
+
+| 名称        | 类型      | 长度 | 小数点 | 不是 null | 虚拟 | 键 | 注释                                 |
+|-------------|-----------|------|--------|-----------|------|----|--------------------------------------|
+| id          | bigint    |      |        | ✔️         |      | 1  | ID                                   |
+| spec_name   | varchar   | 100  |        |           |      |    | 规格名称                             |
+| spec_value  | text      |      |        |           |      |    | 规格值：`[{"key":"颜色","valueList":["蓝","白","红"]}` |
+| create_time | timestamp |      |        | ✔️         |      |    | 创建时间                             |
+| update_time | timestamp |      |        | ✔️         |      |    | 更新时间                             |
+| is_deleted  | tinyint   |      |        | ✔️         |      |    | 删除标记 (0:不可用 1:可用)           |
+
+对应的实体类为：
+
+```java
+@Data
+@TableName("product_spec")
+@Schema(description = "商品规格实体类")
+public class ProductSpec extends BaseEntity {
+
+	@Schema(description = "规格名称")
+	private String specName;   // 规格名称
+
+	@Schema(description = "规格值")
+	private String specValue;  // 规格值
+
+}
+```
+
+****
+### 6.1 分页查询
+
+分页查询设置了一个查询条件就是模糊查询规格名称，因此需要封装一个接收请求参数的实体类：
+
+```java
+@Data
+@Schema(description = "分页查询商品规格参数请求参数实体类")
+public class ProductSpecQueryDto extends QueryPageDto {
+
+    @Schema(description = "规格名称")
+    private String specName;   // 规格名称
+
+}
+```
+
+Controller 层：
+
+```java
+@PostMapping("/list")
+@Operation(summary = "分页查询商品规格参数", description = "可以模糊查询规格名称")
+public Result listByPage(@RequestBody ProductSpecQueryDto productSpecQueryDto) {
+    PageResult<ProductSpec> productSpecPageResult = productSpecService.listByPage(productSpecQueryDto);
+    return Result.build(productSpecPageResult, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+```java
+@Override
+public PageResult<ProductSpec> listByPage(ProductSpecQueryDto productSpecQueryDto) {
+    String specName = productSpecQueryDto.getSpecName();
+    LambdaQueryWrapper<ProductSpec> wrapper = new LambdaQueryWrapper<>();
+    if (specName != null && !specName.isEmpty()) {
+        wrapper.like(ProductSpec::getSpecName, specName);
+    }
+    Page<ProductSpec> page = new Page<>(productSpecQueryDto.getPage(), productSpecQueryDto.getSize());
+    Page<ProductSpec> pageResult = page(page, wrapper);
+    return new PageResult<>(pageResult.getTotal(), pageResult.getPages(), pageResult.getRecords());
+}
+```
+
+根据接口文档进行此时，得到返回结果：
+
+```json
+{
+  "code": 200,
+  "message": "操作成功",
+  "data": {
+    "total": 3,
+    "pages": 1,
+    "records": [
+      {
+        "id": 1,
+        "createTime": "2023-05-06 12:40:22",
+        "updateTime": "2023-05-06 12:40:22",
+        "isDeleted": 0,
+        "specName": "小米手机",
+        "specValue": "[{\"key\":\"颜色\",\"valueList\":[\"白色\",\"红色\",\"黑色\"]},{\"key\":\"内存\",\"valueList\":[\"8G\",\"18G\"]}]"
+      },
+      {
+        "id": 2,
+        "createTime": "2023-05-06 12:56:08",
+        "updateTime": "2023-05-25 14:59:59",
+        "isDeleted": 0,
+        "specName": "笔记本电脑",
+        "specValue": "[{\"key\":\"内存\",\"valueList\":[\"8G\",\"16G\",\"32G\"]}]"
+      },
+      {
+        "id": 8,
+        "createTime": "2023-07-19 09:41:16",
+        "updateTime": "2023-07-19 09:41:24",
+        "isDeleted": 0,
+        "specName": "冰箱",
+        "specValue": "[{\"key\":\"高度\",\"valueList\":[\"200\"]},{\"key\":\"容积\",\"valueList\":[\"60L\"]}]"
+      }
+    ]
+  }
+}
+```
+
+但可以看到 specValue 的返回值不正常：[{\"key\":\"高度\",\"valueList\":[\"200\"]},{\"key\":\"容积\",\"valueList\":[\"60L\"]}]，
+因为当前存入数据库的数据是这样的：[{"key":"颜色","valueList":["白色","红色","黑色"]},{"key":"内存","valueList":["8G","18G"]}]，
+而对应的实体类的 specValue 字段的类型为 String，那么 MyBatisPlus 就会把它当作字符串处理，而 "" 就会被当作特殊符号进行处理，添加转义符 "\"。
+因此需要修改一下该实体类的 specValue 字段的类型为 List<String>，并将该字符串类型转换为 Json 格式。但 MyBatis 不能自动从 JSON 自动转成列表，
+因此需要手动操作，那么就需要封装一个 VO 视图对象：
+
+```java
+@Data
+@Schema(description = "商品规格视图实体类")
+public class ProductSpecVo {
+
+    @Schema(description = "规格名称")
+    private String specName;   // 规格名称
+
+    @Schema(description = "规格值")
+    private List<String> specValue;  // 规格值
+
+}
+```
+
+修改 Service 层：
+
+利用 jackson 将数据库查询出的 String 字段转换成 Json 然后再通过 stream 将 ProductSpec 替换成 ProductSpecVo，specValue 字段则使用转换成 Json 类型的 List。
+
+```java
+ObjectMapper objectMapper = new ObjectMapper();
+
+@Override
+public PageResult<ProductSpecVo> listByPage(ProductSpecQueryDto productSpecQueryDto) {
+    String specName = productSpecQueryDto.getSpecName();
+    LambdaQueryWrapper<ProductSpec> wrapper = new LambdaQueryWrapper<>();
+    if (specName != null && !specName.isEmpty()) {
+        wrapper.like(ProductSpec::getSpecName, specName);
+    }
+    Page<ProductSpec> page = new Page<>(productSpecQueryDto.getPage(), productSpecQueryDto.getSize());
+    Page<ProductSpec> pageResult = page(page, wrapper);
+    List<ProductSpecVo> productSpecVoList = pageResult.getRecords().stream().map(productSpec -> {
+        ProductSpecVo productSpecVo = new ProductSpecVo();
+        BeanUtils.copyProperties(productSpec, productSpecVo);
+        List<String> specValueList;
+        try {
+            specValueList = objectMapper.readValue(productSpec.getSpecValue(), new TypeReference<List<String>>() {
+            });
+            if (specValueList != null && !specValueList.isEmpty()) {
+                productSpecVo.setSpecValue(specValueList);
+            }
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException(e);
+        }
+        return productSpecVo;
+    }).collect(Collectors.toList());
+    return new PageResult<>(pageResult.getTotal(), pageResult.getPages(), productSpecVoList);
+}
+```
+
+经过测试，控制台丢出报错，这是一个 JSON 反序列化错误，它提示无法序列化为 ArrayList<java.lang.Object> 类型：
+
+```text
+com.fasterxml.jackson.databind.exc.MismatchedInputException: Cannot deserialize value of type `java.util.ArrayList<java.lang.Object>` from Object value (token `JsonToken.START_OBJECT`)
+```
+
+因为当前数据库中的字段为：
+
+```json
+[
+  {"key":"颜色","valueList":["白色","红色","黑色"]},
+  {"key":"内存","valueList":["8G","18G"]}
+]
+```
+
+所以 JSON 实际上是一个对象数组（List<Object>），每个对象都长这样：
+
+```json
+{"key":"颜色","valueList":["白色","红色","黑色"]}
+```
+
+它不是一个 List<String> 类型，所以直接用 String 类型接收这里面的元素，就会导致报错，因此需要创建一个实体类用来接收 JSON 对象：
+
+```java
+@Data
+public class SpecItem {
+    private String key;
+    private List<String> valueList;
+}
+```
+
+修改 VO 对象的 specValue 字段：
+
+```java
+private List<SpecItem> specValue;
+```
+
+测试结果：
+
+```json
+{
+    ...
+    "records": [
+      {
+        "specName": "小米手机",
+        "specValue": [
+          {
+            "key": "颜色",
+            "valueList": [
+              "白色",
+              "红色",
+              "黑色"
+            ]
+          },
+          {
+            "key": "内存",
+            "valueList": [
+              "8G",
+              "18G"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+****
+### 6.2 新增
+
+Controller 层：
+
+因为让前端用户填写规格参数时限制了填写的数据为 Json 格式对操作者来说不太方便，所以接收前端的实体类还是用的 ProductSpecVo。
+
+```java
+@PostMapping("/add")
+@Operation(summary = "新增商品规格参数")
+public Result add(@RequestBody ProductSpecVo productSpecvo) {
+    productSpecService.add(productSpecvo);
+    return Result.build(null, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+新增操作则需要将接收到的对象数据序列化成 JSON 格式，然后赋值给 ProductSpec 并进行数据库的新增操作。
+
+```java
+@Override
+public void add(ProductSpecVo productSpecVo) {
+    ProductSpec productSpec = new ProductSpec();
+    BeanUtils.copyProperties(productSpecVo, productSpec);
+    List<SpecItem> specValue = productSpecVo.getSpecValue();
+    if (specValue != null && !specValue.isEmpty()) {
+        String json;
+        try {
+            json = objectMapper.writeValueAsString(specValue);
+            productSpec.setSpecValue(json);
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException(e);
+        }
+    }
+    save(productSpec);
+}
+```
+
+测试数据：
+
+```json
+{
+  "specName": "T恤",
+  "specValue": [
+    {
+      "key": "颜色",
+      "valueList": ["白色","红色","黑色"]
+    },
+    {
+      "key": "尺码",
+      "valueList": ["S","M","L"]
+    }
+  ]
+}
+```
+
+****
+## 7. 商品管理
+
+商品表 product 结构如下：
+
+| 名称         | 类型      | 长度 | 小数点 | 不是 null | 虚拟 | 键 | 注释                                  |
+| ------------ | --------- | ---- | ------ | --------- | ---- | ---- | ------------------------------------- |
+| id           | bigint    |      |        | ✔️        |      | 🔑 1 | ID                                    |
+| name         | varchar   | 255  |        |           |      |      | 商品名称                              |
+| brand_id     | bigint    |      |        |           |      |      | 品牌ID                                |
+| category1_id | bigint    |      |        |           |      |      | 一级分类id                            |
+| category2_id | bigint    |      |        |           |      |      | 二级分类id                            |
+| category3_id | bigint    |      |        |           |      |      | 三级分类id                            |
+| unit_name    | varchar   | 50   |        |           |      |      | 计量单位                              |
+| slider_urls  | text      |      |        |           |      |      | 轮播图                                |
+| spec_value   | varchar   | 255  |        |           |      |      | 商品规格json                          |
+| status       | tinyint   |      |        | ✔️        |      |      | 线上状态: 0-初始值, 1-上架, -1-自主下架 |
+| audit_status | tinyint   |      |        | ✔️        |      |      | 审核状态: 0-初始值, 1-通过, -1-未通过   |
+| audit_message| varchar   | 255  |        |           |      |      | 审核信息                              |
+| create_time  | timestamp |      |        | ✔️        |      |      | 创建时间                              |
+| update_time  | timestamp |      |        | ✔️        |      |      | 更新时间                              |
+| is_deleted   | tinyint   |      |        | ✔️        |      |      | 删除标记 (0:不可用 1:可用)             |
+
+商品属性表 product_attr 结构如下：
+
+| 名称 | 类型 | 长度 | 小数点 | 不是 null | 虚拟 | 键 | 注释 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| id | bigint |  |  | ✔️ |  | 🔑 1 | ID |
+| product_id | bigint |  |  |  |  |  | 商品id |
+| attr_key | varchar | 255 |  |  |  |  | 属性key |
+| attr_value | varchar | 255 |  |  |  |  | 属性value |
+| create_time | timestamp |  |  | ✔️ |  |  | 创建时间 |
+| update_time | timestamp |  |  | ✔️ |  |  | 更新时间 |
+| is_deleted | tinyint |  |  | ✔️ |  |  | 删除标记 (0:不可用 1:可用) |
+
+该表用来存储商品的各类属性，例如：
+
+```text
+(1, 1001, '品牌', '苹果',  ...)
+(2, 1001, '操作系统', 'iOS 17',  ...)
+(3, 1001, '处理器', 'A16仿生',  ...)
+(4, 1001, '屏幕', '6.1英寸',  ...)
+(5, 1001, '防水等级', 'IP68',  ...)
+```
+
+这些数据通常是用来描述 spu 信息的，也就是用户在前端筛选时：“苹果品牌的手机”，那么就会展示该品牌的手机的一些常见参数，例如：
+
+```text
+技术规格：
+品牌        苹果
+型号        iPhone 15
+屏幕        6.1英寸
+处理器      A16仿生
+摄像头      4800万像素
+电池        3240mAh
+```
+
+而规格参数 product_spec 表是用来描述某个具体的 sku 的，例如在商品选购页面，需要选择苹果手机的颜色和内存，这个颜色和内存就是规格参数。
+
+商品详情表 product_details 结构如下：
+
+| 名称 | 类型 | 长度 | 小数点 | 不是 null | 虚拟 | 键 | 注释 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| id | bigint |  |  | ✔️ |  | 🔑 1 | ID |
+| product_id | bigint |  |  |  |  |  | 商品id |
+| image_urls | text |  |  |  |  |  | 详情图片地址 |
+| create_time | timestamp |  |  | ✔️ |  |  | 创建时间 |
+| update_time | timestamp |  |  | ✔️ |  |  | 更新时间 |
+| is_deleted | tinyint |  |  | ✔️ |  |  | 删除标记 (0:不可用 1:可用) |
+
+该表格主要是存放商品详情的长图，并不是用文字进行描述。
+
+商品 sku 表 product_sku 结构如下：
+
+| 名称 | 类型 | 长度 | 小数点 | 不是 null | 虚拟 | 键 | 注释 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| id | bigint |  |  | ✔️ |  | 🔑 1 | ID |
+| sku_code | varchar | 30 |  |  |  |  | 商品编号 |
+| sku_name | varchar | 255 |  |  |  |  |  |
+| product_id | bigint |  |  |  |  |  | 商品ID |
+| thumb_img | varchar | 255 |  |  |  |  | 缩略图路径 |
+| sale_price | decimal | 10 | 2 |  |  |  | 售价 |
+| market_price | decimal | 10 | 2 |  |  |  | 市场价 |
+| cost_price | decimal | 10 | 2 |  |  |  | 成本价 |
+| stock_num | int |  |  |  |  |  | 库存数 |
+| sale_num | int |  |  | ✔️ |  |  | 销量 |
+| sku_spec | varchar | 255 |  |  |  |  | sku规格信息json |
+| weight | decimal | 10 | 2 |  |  |  | 重量 |
+| volume | decimal | 10 | 2 |  |  |  | 体积 |
+| status | tinyint |  |  |  |  |  | 线上状态: 0-初始值, 1-上架, -1-自主下架 |
+| create_time | timestamp |  |  | ✔️ |  |  | 创建时间 |
+| update_time | timestamp |  |  | ✔️ |  |  | 更新时间 |
+| is_deleted | tinyint |  |  | ✔️ |  |  | 删除标记 (0:不可用 1:可用) |
+
+该表用来记录某个具体的商品详情信息，该表格有三个容易弄混的字段，分别是主键 ID、商品编号和商品 ID：
+
+1) 主键 ID 是数据表的主键，它一般用来查询表中数据或者关联其余表，不用来展示在前端
+2) 商品编号适用于前端展示、库存管理或订单处理的，在平常的网购中每个商品都有自己的编号，使用该编号可以提高可读性，否则用主键 ID 给商品打标签就太随意了
+3) 商品 ID 则是某个具体的 SPU，它有多个 SKU，例如一个 iPhone 15，那么它的 product 表中的数据就是：id=1001, name='iPhone 15'
+
+****
+### 7.1 spu 商品实体类
+
+spu 商品是在浏览商品时展示在页面的，它只会显示当前商品是什么，不会显示具体的参数，例如主图、品牌、价格区间（SKU 中最小价格 ~ 最大价格）等。而该实体类中还需要封装三级分类的 id，
+因为前端在展示商品时需要展示完整的分类路径，例如：手机 > 智能手机 > Apple 手机，虽然商品分类是独立的一张表（比如 category 表），SPU 中仍需要冗余分类字段。
+因为在前端页面经常需要根据分类条件来筛选商品，如果不在这里保存分类 ID，那就需要进行多表联查，性能较低。
+
+```java
+@Data
+@Schema(description = "商品实体类")
+public class Product extends BaseEntity {
+
+	@Schema(description = "商品名称")
+	private String name;					// 商品名称
+
+	@Schema(description = "品牌id")
+	private Long brandId;					// 品牌ID
+
+	@Schema(description = "一级分类id")
+	private Long category1Id;				// 一级分类id
+
+	@Schema(description = "二级分类id")
+	private Long category2Id;				// 二级分类id
+
+	@Schema(description = "三级分类id")
+	private Long category3Id;				// 三级分类id
+
+	@Schema(description = "计量单位")
+	private String unitName;				// 计量单位
+
+	@Schema(description = "轮播图url")
+	private String sliderUrls;				// 轮播图
+
+	@Schema(description = "线上状态：0-初始值，1-上架，-1-自主下架")
+	private Integer status;					// 线上状态：0-初始值，1-上架，-1-自主下架
+
+	@Schema(description = "审核状态")
+	private Integer auditStatus;			// 审核状态
+
+	@Schema(description = "审核信息")
+	private String auditMessage;			// 审核信息
+
+	// 扩展的属性，用来封装响应的数据
+	@Schema(description = "品牌名称")
+	private String brandName;				// 品牌
+
+	@Schema(description = "一级分类名称")
+	private String category1Name;			// 一级分类
+
+	@Schema(description = "二级分类名称")
+	private String category2Name;			// 二级分类
+
+	@Schema(description = "三级分类名称")
+	private String category3Name;			// 三级分类
+
+	@Schema(description = "图片详情列表")
+	private String detailsImageUrls;		 // 图片详情列表
+
+}
+```
+
+****
+### 7.2 列表分页查询 spu 信息
+
+在前端页面查询 SPU 商品信息时通常会传递很多参数，不过这个查询并不是商城使用者的查询页面，因此不需要考虑那些销量、价格区间之类的信息。
+
+```java
+@Data
+@Schema(description = "分页请求 spu 商品信息请求参数实体类")
+public class ProductQueryDto extends QueryPageDto {
+
+    @Schema(description = "商品名称")
+    private String name;
+    
+    @Schema(description = "品牌id")
+    private Long brandId;
+
+    @Schema(description = "一级分类id")
+    private Long category1Id;
+
+    @Schema(description = "二级分类id")
+    private Long category2Id;
+
+    @Schema(description = "三级分类id")
+    private Long category3Id;
+    
+}
+```
+
+Controller 层：
+
+```java
+@PostMapping("/listByPage")
+@Operation(summary = "分页查询 SPU 商品信息")
+public Result listByPage(@RequestBody ProductQueryDto productQueryDto) {
+    PageResult<Product> productPageResult = productService.listByPage(productQueryDto);
+    return Result.build(productPageResult, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+```java
+@Override
+public PageResult<Product> listByPage(ProductQueryDto productQueryDto) {
+    String name = productQueryDto.getName();
+    Long brandId = productQueryDto.getBrandId();
+    Long category1Id = productQueryDto.getCategory1Id();
+    Long category2Id = productQueryDto.getCategory2Id();
+    Long category3Id = productQueryDto.getCategory3Id();
+    LambdaQueryWrapper<Product> wrapper = new LambdaQueryWrapper<>();
+    if (StringUtils.isNotEmpty(name)) {
+        wrapper.like(Product::getName, name);
+    }
+    if (brandId != null && brandId > 0) {
+        wrapper.eq(Product::getBrandId, brandId);
+    }
+    if (category1Id != null && category1Id > 0) {
+        wrapper.eq(Product::getCategory1Id, category1Id);
+    }
+    if (category2Id != null && category2Id > 0) {
+        wrapper.eq(Product::getCategory2Id, category2Id);
+    }
+    if (category3Id != null && category3Id > 0) {
+        wrapper.eq(Product::getCategory3Id, category3Id);
+    }
+    Page<Product> page = new Page<>(productQueryDto.getPage(), productQueryDto.getSize());
+    Page<Product> pageResult = page(page, wrapper);
+    return new PageResult<>(pageResult.getTotal(), pageResult.getPages(), pageResult.getRecords());
+}
+```
+
+****
+### 7.3 添加 SPU 信息
+
+#### 7.3.1 加载品牌数据
+
+当用户选择了三级分类以后，此时需要将三级分类所对应的品牌数据查询出来在品牌下拉框中进行展示，而前端会提前保存好所有的分类数据，当选中了第三级分类时，就会把该分类 id 传递给后端，
+后端再通过该 id 查询 category_brand 表获取到对应的 brandId 集合。
+
+Controller 层：
+
+```java
+@GetMapping("/findBrandByCategoryId/{categoryId}")
+@Operation(summary = "根据商品分类 id 加载关联的品牌数据")
+public Result findBrandByCategoryId(@PathVariable Long categoryId) {
+    List<Brand> brandList = categoryBrandService.findBrandByCategoryId(categoryId);
+    return Result.build(brandList, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+因为存在一个多个品牌拥有同一个三级分类的情况，因此获取的 brandId 集合需要进行去重处理。
+
+```java
+@Override
+public List<Brand> findBrandByCategoryId(Long categoryId) {
+    LambdaQueryWrapper<CategoryBrand> wrapper = new LambdaQueryWrapper<CategoryBrand>().eq(CategoryBrand::getCategoryId, categoryId);
+    Set<Long> brandIdSet = list(wrapper).stream().map(CategoryBrand::getBrandId).collect(Collectors.toSet());
+    return brandService.listByIds(brandIdSet);
+}
+```
+
+****

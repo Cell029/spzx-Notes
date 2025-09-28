@@ -1,10 +1,13 @@
 package com.cell.model.entity.product;
 
+import com.baomidou.mybatisplus.annotation.TableName;
 import com.cell.model.entity.base.BaseEntity;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
+import java.util.List;
 
 @Data
+@TableName("product_spec")
 @Schema(description = "商品规格实体类")
 public class ProductSpec extends BaseEntity {
 

@@ -14,6 +14,7 @@ import com.cell.spzx.product.service.CategoryBrandService;
 import com.cell.spzx.product.service.CategoryService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -26,8 +27,8 @@ public class CategoryBrandServiceImpl extends ServiceImpl<CategoryBrandMapper, C
     @Autowired
     private BrandService brandService;
 
-    // TODO 优化
-    @Override
+    // 优化
+    /*@Override
     public PageResult<CategoryBrand> findByPage(CategoryBrandDto categoryBrandDto) {
         Long brandId = categoryBrandDto.getBrandId();
         Long categoryId = categoryBrandDto.getCategoryId();
@@ -105,8 +106,70 @@ public class CategoryBrandServiceImpl extends ServiceImpl<CategoryBrandMapper, C
             }
         }
         return new PageResult<>();
+    }*/
+
+    // 优化
+    @Override
+    public PageResult<CategoryBrand> findByPage(CategoryBrandDto categoryBrandDto) {
+        Long brandId = categoryBrandDto.getBrandId();
+        Long categoryId = categoryBrandDto.getCategoryId();
+        Page<CategoryBrand> page = new Page<>(categoryBrandDto.getPage(), categoryBrandDto.getSize());
+        LambdaQueryWrapper<CategoryBrand> cbWrapper = new LambdaQueryWrapper<>();
+        // 前端传递了品牌和商品分类两个条件，那么就可以确定唯一的数据
+        // 当前端只选择了品牌，那么就可能查询出多个相同品牌的不同商品分类
+        if (brandId != null && brandId != 0L) {
+            cbWrapper.eq(CategoryBrand::getBrandId, brandId);
+        }
+        // 当前端只选择了商品分类，那么就可能查询出多个不同品牌下的同一个商品分类
+        if (categoryId != null && categoryId != 0L) {
+            cbWrapper.eq(CategoryBrand::getCategoryId, categoryId);
+        }
+        // 获取分页查询结果
+        Page<CategoryBrand> pageResult = page(page, cbWrapper);
+        List<CategoryBrand> records = pageResult.getRecords();
+        // 通过结果集获取所有 CategoryBrand 中拥有的 brandId 和 categoryId 集合，因为可能存在重复，所以把它们封装成 Set 集合
+        Set<Long> brandIdSet = records.stream().map(CategoryBrand::getBrandId).collect(Collectors.toSet());
+        Set<Long> categoryIdSet = records.stream().map(CategoryBrand::getCategoryId).collect(Collectors.toSet());
+        // 获取到所有相关的 Brand 和 Category
+        List<Brand> brandList = brandService.listByIds(brandIdSet);
+        List<Category> categoryList = categoryService.listByIds(categoryIdSet);
+        // 把 Brand 和 Category 封装成 Map 集合，以各自的 Id 为 key，实体类为 value
+        // 这样后面给 CategoryBrand 对象赋值时就可以直接通过它们的 id 获取到对应的实体类
+        Map<Long, Brand> brandMap = brandList.stream().collect(Collectors.toMap(Brand::getId, brand -> brand));
+        Map<Long, Category> categoryMap = categoryList.stream().collect(Collectors.toMap(Category::getId, category -> category));
+        // 处理分页查询的结果集，给每个 CategoryBrand 对象的新增字段赋值
+        List<CategoryBrand> categoryBrandList = records.stream().map(categoryBrand -> {
+            // 根据 brandId 从 Map 集合中获取到对应的 Brand 实体类，避免多次循环查找数据库
+            Brand brand = brandMap.get(categoryBrand.getBrandId());
+            Category category = categoryMap.get(categoryBrand.getCategoryId());
+            if (brand != null) {
+                categoryBrand.setBrandName(brand.getName());
+                categoryBrand.setLogo(brand.getLogo());
+            }
+            if (category != null) {
+                categoryBrand.setCategoryName(category.getName());
+            }
+            return categoryBrand;
+        }).collect(Collectors.toList());
+        return new PageResult<>(pageResult.getTotal(), pageResult.getSize(), categoryBrandList);
     }
 
+    @Override
+    public void add(CategoryBrand categoryBrand) {
+        save(categoryBrand);
+    }
 
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void delete(List<Long> ids) {
+        removeBatchByIds(ids);
+    }
+
+    @Override
+    public List<Brand> findBrandByCategoryId(Long categoryId) {
+        LambdaQueryWrapper<CategoryBrand> wrapper = new LambdaQueryWrapper<CategoryBrand>().eq(CategoryBrand::getCategoryId, categoryId);
+        Set<Long> brandIdSet = list(wrapper).stream().map(CategoryBrand::getBrandId).collect(Collectors.toSet());
+        return brandService.listByIds(brandIdSet);
+    }
 
 }
