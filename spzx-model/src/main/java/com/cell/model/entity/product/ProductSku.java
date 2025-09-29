@@ -1,13 +1,13 @@
 package com.cell.model.entity.product;
 
+import com.baomidou.mybatisplus.annotation.TableName;
 import com.cell.model.entity.base.BaseEntity;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
-
 import java.math.BigDecimal;
-import java.util.List;
 
 @Data
+@TableName("product_sku")
 @Schema(description = "ProductSku")
 public class ProductSku extends BaseEntity {
 

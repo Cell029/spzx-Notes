@@ -9,9 +9,9 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.session.data.redis.config.annotation.web.http.EnableRedisHttpSession;
 
 @EnableScheduling
-@EnableFeignClients
 @EnableDiscoveryClient
 @EnableRedisHttpSession
+@EnableFeignClients(basePackages = "com.cell")
 @MapperScan("com.cell.spzx.role_manage.mapper")
 @SpringBootApplication(scanBasePackages = {"com.cell"})
 public class AuthorityManageApplication {

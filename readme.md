@@ -5839,22 +5839,6 @@ public class Product extends BaseEntity {
 	@Schema(description = "审核信息")
 	private String auditMessage;			// 审核信息
 
-	// 扩展的属性，用来封装响应的数据
-	@Schema(description = "品牌名称")
-	private String brandName;				// 品牌
-
-	@Schema(description = "一级分类名称")
-	private String category1Name;			// 一级分类
-
-	@Schema(description = "二级分类名称")
-	private String category2Name;			// 二级分类
-
-	@Schema(description = "三级分类名称")
-	private String category3Name;			// 三级分类
-
-	@Schema(description = "图片详情列表")
-	private String detailsImageUrls;		 // 图片详情列表
-
 }
 ```
 
@@ -5958,6 +5942,857 @@ public List<Brand> findBrandByCategoryId(Long categoryId) {
     LambdaQueryWrapper<CategoryBrand> wrapper = new LambdaQueryWrapper<CategoryBrand>().eq(CategoryBrand::getCategoryId, categoryId);
     Set<Long> brandIdSet = list(wrapper).stream().map(CategoryBrand::getBrandId).collect(Collectors.toSet());
     return brandService.listByIds(brandIdSet);
+}
+```
+
+****
+#### 7.3.2 加载单元数据
+
+表 product_unit 结构如下：
+
+| 名称        | 类型      | 长度 | 小数点 | 不是 null | 虚拟 | 键   | 注释                |
+| ----------- | --------- | ---- | ------ | --------- | ---- | ---- | ------------------- |
+| id          | bigint    |      |        | ✔️        |      | 1    | ID                  |
+| name        | varchar   | 255  |        | ❌        |      |      | 名称                |
+| create_time | timestamp |      |        | ✔️        |      |      | 创建时间            |
+| update_time | timestamp |      |        | ✔️        |      |      | 更新时间            |
+| is_deleted  | tinyint   |      |        | ✔️        |      |      | 删除标记 (0:不可用 1:可用) |
+
+当添加商品的表单对话框展示出来以后，此时就需要从数据库中查询出来所有的商品单元数据，并将查询到的商品单元数据在商品单元下拉框中进行展示。
+
+Controller 层：
+
+```java
+@GetMapping("getProductUnit")
+public Result getProductUnit() {
+    List<ProductUnit> productUnitList = productUnitService.getProductUnit();
+    return Result.build(productUnitList , ResultCodeEnum.SUCCESS) ;
+}
+```
+
+Service 层：
+
+```java
+@Service("productUnitService")
+public class ProductUnitServiceImpl extends ServiceImpl<ProductUnitMapper, ProductUnit> implements ProductUnitService {
+    @Override
+    public List<ProductUnit> getProductUnit() {
+        return list();
+    }
+}
+```
+
+测试结果：
+
+```json
+{
+  "data": [
+    {
+      "id": 1,
+      "name": "个"
+    },
+    {
+      "id": 2,
+      "name": "台"
+    },
+    {
+      "id": 3,
+      "name": "包"
+    },
+    {
+      "id": 4,
+      "name": "打"
+    },
+    {
+      "id": 5,
+      "name": "带"
+    }
+  ]
+}
+```
+
+****
+#### 7.3.3 加载商品规格数据
+
+当添加商品的表单对话框展示出来以后，此时就需要从数据库中查询出来所有的商品规格数据，并将查询到的商品规格数据在商品规格下拉框中进行展示。
+
+```java
+@GetMapping("findAll")
+@Operation(summary = "查询所有商品规格参数")
+public Result findAll() {
+    List<ProductSpec> productSpecList = productSpecService.findAll();
+    return Result.build(productSpecList, ResultCodeEnum.SUCCESS);
+}
+```
+
+```java
+@Override
+public List<ProductSpec> findAll() {
+    return list();
+}
+```
+
+****
+#### 7.3.4 保存商品数据
+
+1、前端提交过来的数据，包含了 SPU 的基本数据，SKU 的列表数据，商品详情数据图
+
+2、因为前端传递的信息是需要插入 product 表的，因此可以用 Product 实体类接收，但推荐新建一个实体类继承它，并添加一些扩展字段
+
+3、保存数据的时候需要操作三张表：product、product_sku、product_detail
+
+SPU 信息扩展 ProductDto 实体类：
+
+该实体类继承了 Product，因此它可以接收到前端的 SPU 信息后保存到 product 表中，这里还扩展了两个字段，分别是 SKU 实体列表和图片详情，这两个数据前端也会传递，
+因此需要额外封装，不过它们是操作的其它表。
+
+```java
+@Data
+@Schema(description = "商品实体类")
+public class ProductDto extends Product {
+
+    // 扩展的属性，用来封装响应的数据
+    @TableField(exist = false)
+	@Schema(description = "sku列表集合")
+	private List<ProductSku> productSkuList; // sku列表集合
+
+    @TableField(exist = false)
+	@Schema(description = "图片详情列表")
+	private String detailsImageUrls;		 // 图片详情列表
+
+}
+```
+
+ProductSku 实体类：
+
+前端会根据每个不同的商品规格组合产生多个 SKU，而该实体就是用来接收这些前端填写的不规格组合的 SKU 信息，例如苹果手机：白色 + 8G，那么就可以设置它的售价、
+市场价、重量、体积等信息。
+
+```java
+@Data
+@TableName("product_sku")
+@Schema(description = "ProductSku")
+public class ProductSku extends BaseEntity {
+
+	@Schema(description = "商品编号")
+	private String skuCode;
+
+	@Schema(description = "skuName")
+	private String skuName;
+
+	@Schema(description = "商品ID")
+	private Long productId;
+
+	@Schema(description = "缩略图路径")
+	private String thumbImg;
+
+	@Schema(description = "售价")
+	private BigDecimal salePrice;
+
+	@Schema(description = "市场价")
+	private BigDecimal marketPrice;
+
+	@Schema(description = "成本价")
+	private BigDecimal costPrice;
+
+	@Schema(description = "库存数")
+	private Integer stockNum;
+
+	@Schema(description = "销量")
+	private Integer saleNum;
+
+	@Schema(description = "sku规格信息json")
+	private String skuSpec;
+
+	@Schema(description = "重量")
+	private String weight;
+
+	@Schema(description = "体积")
+	private String volume;
+
+	@Schema(description = "线上状态：0-初始值，1-上架，-1-自主下架")
+	private Integer status;
+
+}
+```
+
+ProductDetails 实体类：
+
+```java
+@Data
+@TableName("product_details")
+@Schema(description = "商品详情实体类（图片）")
+public class ProductDetails extends BaseEntity {
+
+    @Schema(description = "商品 ID")
+    private Long productId;
+
+    @Schema(description = "商品详情图")
+    private String imageUrls;
+
+}
+```
+
+Controller 层：
+
+```java
+@PostMapping("/addProduct")
+@Operation(summary = "新增商品信息", description = "添加商品 SPU、SKU、SPC、DETAILS 信息")
+public Result addProduct(@RequestBody ProductDto productDto) {
+    productService.addProduct(productDto);
+    return Result.build(null , ResultCodeEnum.SUCCESS) ;
+}
+```
+
+Service 层：
+
+添加一个商品分为三步：保存 SPU、保存 SKU、保存 DETAILS
+
+1) 保存 SPU
+
+在前端添加一个商品时，首先要填写的数据信息就是 SPU 的基本信息，要选择某个具体分类下的某个具体品牌，然后填写该 SPU 的名称，图片等信息。因为而后端只需要拿到这些数据后，
+再设置一下其余的初始值就可以直接保存进 product 表中了。
+
+2) 保存 SKU
+
+要保存　SKU，首先得获取到当前新增的商品是哪个，也就是获取到　SPU　的　id，而 MyBatisPlus 在完成插入插入操作后会自动将主键 ID 填充进实体类，因此可以直接获取到 productId，
+接着就是遍历每个 SKU 并对其中的一些字段进行处理，这里就是设置一下它的 productId、商品编码、销量、状态、SKU 名称等，不过前端传递的 productSpec 数据是 JSON 类型的，
+因此需要将它转换成字符串类型，这样在拼接 SKU 名称时就只会出现商品规格的值了，例如 小米 14 Ultra 白色 12G。
+
+3) 保存 DETAILS
+
+前端在最后还会上传一下该商品的详情图，它是用来描述整个商品的，也就是用图片的形式描述 SPU。
+
+```java
+@Override
+@Transactional(rollbackFor = Exception.class)
+public void addProduct(ProductDto productDto) {
+    // 1. 将 SPU 信息保存进 product 表
+    Product product = new Product();
+    BeanUtils.copyProperties(productDto, product);
+    product.setStatus(0); // 设置上架状态为 0
+    product.setAuditStatus(0); // 设置审核状态为 0
+    // 保存商品规格参数
+    String specValue = productDto.getSpecValue();
+    if (specValue != null) {
+        product.setSpecValue(specValue);
+    }
+    save(product);
+    // 获取插入数据时的回显 productId
+    Long productId = product.getId();
+    // 2. 将 SKU 信息保存进 product_sku 表
+    List<ProductSku> productSkuList = productDto.getProductSkuList();
+    if (specValue != null) {
+        AtomicInteger count = new AtomicInteger();
+        List<ProductSku> collect = productSkuList.stream().map(productSku -> {
+            count.getAndIncrement();
+            productSku.setProductId(productId);
+            productSku.setSkuCode(productId + "_" + count.get());
+            productSku.setSaleNum(0); // 设置销量
+            productSku.setStatus(0);
+            String skuSpec = productSku.getSkuSpec();
+            try {
+                Map<String, String> specMap = objectMapper.readValue(skuSpec, Map.class);
+                StringBuilder stringBuilder = new StringBuilder(product.getName());
+                for (String value : specMap.values()) {
+                    stringBuilder.append(" ").append(value); // 设置 SKU 名称
+                }
+            } catch (Exception e) {
+                // 解析异常就退回原逻辑
+                productSku.setSkuName(product.getName() + skuSpec);
+            }
+            return productSku;
+        }).collect(Collectors.toList());
+        productSkuService.saveBatch(collect);
+    }
+    // 3. 将 DETAILS 信息保存进 product_details 表
+    ProductDetails productDetails = new ProductDetails();
+    productDetails.setProductId(productId);
+    String detailsImageUrls = productDto.getDetailsImageUrls();
+    if (StringUtils.isNotEmpty(detailsImageUrls)) {
+        productDetails.setImageUrls(detailsImageUrls);
+    }
+    productDetailsService.save(productDetails);
+}
+```
+
+测试：
+
+```json
+{
+  "id": 0,
+  "createTime": "",
+  "updateTime": "",
+  "isDeleted": 0,
+  "name": "小米 15 Ultra",
+  "brandId": 1001,
+  "category1Id": 1,
+  "category2Id": 11,
+  "category3Id": 111,
+  "unitName": "台",
+  "sliderUrls": "https://cdn.example.com/xiaomi14ultra-1.jpg,https://cdn.example.com/xiaomi14ultra-2.jpg",
+  "status": 0,
+  "auditStatus": 0,
+  "auditMessage": "",
+  "brandName": "小米",
+  "category1Name": "手机数码",
+  "category2Name": "手机通讯",
+  "category3Name": "智能手机",
+  "specValue": "[{\"key\":\"颜色\",\"valueList\":[\"白色\",\"黑色\"]},{\"key\":\"存储容量\",\"valueList\":[\"12GB+256GB\",\"16GB+512GB\"]}]",
+  "productSkuList": [
+    {
+      "id": 0,
+      "createTime": "",
+      "updateTime": "",
+      "isDeleted": 0,
+      "skuCode": "",
+      "skuName": "",
+      "productId": 0,
+      "thumbImg": "https://cdn.example.com/xiaomi14ultra-white.jpg",
+      "salePrice": 5999.00,
+      "marketPrice": 6999.00,
+      "costPrice": 4800.00,
+      "stockNum": 100,
+      "saleNum": 0,
+      "skuSpec": "{\"颜色\":\"白色\",\"存储容量\":\"12GB+256GB\"}",
+      "weight": "0.25",
+      "volume": "0.001",
+      "status": 0
+    },
+    {
+      "id": 0,
+      "createTime": "",
+      "updateTime": "",
+      "isDeleted": 0,
+      "skuCode": "",
+      "skuName": "",
+      "productId": 0,
+      "thumbImg": "https://cdn.example.com/xiaomi14ultra-black.jpg",
+      "salePrice": 6499.00,
+      "marketPrice": 7499.00,
+      "costPrice": 5200.00,
+      "stockNum": 80,
+      "saleNum": 0,
+      "skuSpec": "{\"颜色\":\"黑色\",\"存储容量\":\"16GB+512GB\"}",
+      "weight": "0.25",
+      "volume": "0.001",
+      "status": 0
+    }
+  ],
+  "detailsImageUrls": "https://cdn.example.com/detail1.jpg,https://cdn.example.com/detail2.jpg"
+}
+```
+
+****
+### 7.4 修改商品信息
+
+当用户点击修改按钮的时候，那么此时就弹出对话框，在该对话框的商品表单中回显商品相关数据，此时用户对商品数据进行修改，修改完毕以后点击提交按钮将表单进行提交，后端服务修改数据库中数据即可。
+
+#### 7.4.1 回显商品信息
+
+因为是回显数据，所以要把当时动态选择的一些数据查询出来，比如当时选择的品牌、分类名、以及该商品对应的规格参数，因此需要在 ProductDto 类上新增一些字段。
+
+```java
+@Data
+@Schema(description = "商品实体类")
+public class ProductDto extends Product {
+
+    // 扩展的属性，用来封装响应的数据
+    @TableField(exist = false)
+    @Schema(description = "品牌名称")
+    private String brandName;				// 品牌
+
+    @TableField(exist = false)
+    @Schema(description = "一级分类名称")
+    private String category1Name;			// 一级分类
+
+    @TableField(exist = false)
+    @Schema(description = "二级分类名称")
+    private String category2Name;			// 二级分类
+
+    @TableField(exist = false)
+    @Schema(description = "三级分类名称")
+    private String category3Name;			// 三级分类
+    
+}
+```
+
+Controller 层：
+
+```java
+@GetMapping("/getProductById/{id}")
+@Operation(summary = "根据 ID 查询商品信息")
+public Result getProductById(@PathVariable Long id) {
+    ProductDto productDto = productService.getProductById(id);
+    return Result.build(productDto, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+因为需要展示当前商品的商品规格，因此在新增商品时就需要保存该数据到数据库中，那么就得在 Product 实体类中新增一个字段：
+
+```java
+@Data
+@TableName("product")
+@Schema(description = "商品实体类")
+public class Product extends BaseEntity {
+    ...
+    @Schema(description = "商品规格值json串")
+    private String specValue;		        // 商品规格值json串 
+}
+```
+
+查询商品信息和添加商品信息类似，也是分为三步，只不过一个是保存，一个是查询，但操作的三个对象都一样，只要从表中获取数据即可，不过品牌数据和商品分类数据则需要通过保存的 Id 去其它表查询。
+
+```java
+@Override
+public ProductDto getProductById(Long id) {
+    ProductDto productDto = new ProductDto();
+    // 1. 封装 SPU 信息
+    Product product = getById(id);
+    BeanUtils.copyProperties(product, productDto);
+    // 2. 封装 SKU 信息
+    List<ProductSku> productSkuList = productSkuService.list(new LambdaQueryWrapper<ProductSku>().eq(ProductSku::getProductId, id));
+    productDto.setProductSkuList(productSkuList);
+    // 3. 封装 DETAILS 信息
+    ProductDetails productDetails = productDetailsService.getOne(new LambdaQueryWrapper<ProductDetails>().eq(ProductDetails::getProductId, id));
+    productDto.setDetailsImageUrls(productDetails.getImageUrls());
+    // 查询品牌信息
+    Long brandId = product.getBrandId();
+    Brand brand = brandService.getById(brandId);
+    if (brand != null) {
+        productDto.setBrandName(brand.getName());
+    }
+    // 查询商品分类信息
+    Long category1Id = product.getCategory1Id();
+    Long category2Id = product.getCategory2Id();
+    Long category3Id = product.getCategory3Id();
+    List<Long> categoryIdList = new ArrayList<>();
+    categoryIdList.add(category1Id);
+    categoryIdList.add(category2Id);
+    categoryIdList.add(category3Id);
+    List<Category> categoryList = categoryService.listByIds(categoryIdList);
+    if (CollectionUtils.isNotEmpty(categoryList)) {
+        Map<Long, Category> categoryMap = categoryList.stream().collect(Collectors.toMap(Category::getId, category -> category));
+        productDto.setCategory1Name(categoryMap.get(category1Id).getName());
+        productDto.setCategory2Name(categoryMap.get(category2Id).getName());
+        productDto.setCategory3Name(categoryMap.get(category3Id).getName());
+    }
+    return productDto;
+}
+```
+
+****
+#### 7.4.2 修改商品信息
+
+修改商品信息和新增商品信息其实有点类似，因为它们是共用一个对话框的，对话框的结构和内容都是一样的，因此后端接收参数时和新增方法用的实体类一样，都是 ProductDto。
+同样的，修改也分三步：修改 SPU 信息、修改 SKU 信息、修改 DETAILS 信息。
+
+Controller 层：
+
+```java
+@PutMapping("/updateProductById")
+@Operation(summary = "根据 ID 修改商品信息")
+public Result updateById(@RequestBody ProductDto productDto) {
+    productService.updateProductById(productDto);
+    return Result.build(null, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+1) 修改 SPU 信息
+
+修改 SPU 信息很简单，因为 ProductDto 是继承 Product 的，只要前端有数据传递过来，直接修改即可。
+
+2) 修改 SKU 信息
+
+修改 SKU 信息时则不能直接调用 update 方法，因为 SKU 的商品名称是根据 SPU 的动态展示的，因此需要再次设置一次名字，当然这个逻辑和新增商品时设置 SKU　名字一样。
+
+3) 修改 DETAILS 信息
+
+使用 updateById 需要实体类中包含数据库表的主键 ID，但在新增商品时没有涉及到 product_details 表的主键，因此不能使用该方法。不过该数据是通过 productId 进行关联的，
+而 productId 在 product_details 表中是唯一的，每条数据的 productId 都不同，所以可以拿它作为更新条件。
+
+```java
+@Override
+@Transactional
+public void updateProductById(ProductDto productDto) {
+    // 1. 修改 SPU 信息
+    updateById(productDto);
+    // 2. 修改 SKU 信息
+    List<ProductSku> productSkuList = productDto.getProductSkuList();
+    if (CollectionUtils.isNotEmpty(productSkuList)) {
+        List<ProductSku> collect = productSkuList.stream().map(productSku -> {
+            StringBuilder stringBuilder = new StringBuilder(productDto.getName());
+            String skuSpec = productSku.getSkuSpec();
+            Map<String, String> specMap = null;
+            try {
+                specMap = objectMapper.readValue(skuSpec, Map.class);
+            } catch (JsonProcessingException e) {
+                throw new RuntimeException(e);
+            }
+            for (String value : specMap.values()) {
+                stringBuilder.append(" ").append(value);
+            }
+            productSku.setSkuName(stringBuilder.toString()); // 设置 SKU 名称
+            return productSku;
+        }).collect(Collectors.toList());
+        productSkuService.updateBatchById(collect);
+    }
+    // 3. 修改 DETAILS 信息
+    String detailsImageUrls = productDto.getDetailsImageUrls();
+    if (StringUtils.isNotEmpty(detailsImageUrls)) {
+        ProductDetails productDetails = new ProductDetails();
+        productDetails.setProductId(productDto.getId());
+        productDetails.setImageUrls(detailsImageUrls);
+        productDetailsService.update(productDetails, new LambdaQueryWrapper<ProductDetails>().eq(ProductDetails::getProductId, productDto.getId()));
+    }
+}
+```
+
+****
+### 7.5 删除商品信息
+
+删除操作分为单个删除和批量删除，因此后端用一个集合来接受，同时处理批量删除和单个删除的情况。
+
+Controller 层：
+
+```java
+@DeleteMapping("/deleteProductById")
+@Operation(summary = "根据 ID 删除商品信息")
+public Result deleteProductById(@RequestBody List<Long> ids) {
+    productService.deleteProductById(ids);
+    return Result.build(null, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+这里需要注意的是，SKU 和 DETAILS 表中都是用了 productId 作为字段与 SPU 信息进行关联，如果此时对 productId 字段使用了外键，那么就得先删除 SKU 和 DETAILS 表，
+因为如果删除父表的一条记录，而子表中还有引用它的记录，数据库就会拒绝删除，报外键约束错误（当然我这里没有设置外键约束）。
+
+```java
+@Override
+@Transactional
+public void deleteProductById(List<Long> ids) {
+    // 2. 删除 SKU 信息
+    productSkuService.remove(new LambdaQueryWrapper<ProductSku>().in(ProductSku::getProductId, ids));
+    // 3. 删除 DETAILS 信息
+    productDetailsService.remove(new LambdaQueryWrapper<ProductDetails>().in(ProductDetails::getProductId, ids));
+    // 1. 删除 SPU　信息
+    removeBatchByIds(ids);
+}
+```
+
+****
+### 7.6 商品审核
+
+在商品列表页面每个商品都会有个审核按钮，当点击审核按钮的时候此时需要弹出一个对话框，在该对话框中展示商品的详情信息，用户可以在该对话框中点击通过或者驳回按钮对商品进行审核操作。
+
+Controller 层：
+
+在点击审核按钮时，前端会根据选择的通过或者拒绝来传递不同的信息，例如点击通过，那么就会传递一个 1；拒绝就会传递一个 -1；那么后端就可以根据这个传递的值来判断审核结果，
+如果通过就设置表中的 audit_status 字段为 1，反之设置为 -1。
+
+```java
+@GetMapping("/updateAuditStatus/{id}/{auditStatus}")
+@Operation(summary = "审核商品")
+public Result updateAuditStatus(@PathVariable Long id, @PathVariable Integer auditStatus) {
+    productService.updateAuditStatus(id, auditStatus);
+    return Result.build(null, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+```java
+@Override
+public void updateAuditStatus(Long id, Integer auditStatus) {
+    Product product = new Product();
+    product.setId(id);
+    if(auditStatus == 1) {
+        product.setAuditStatus(1);
+        product.setAuditMessage("审批通过");
+    } else {
+        product.setAuditStatus(-1);
+        product.setAuditMessage("审批不通过");
+    }
+    updateById(product);
+}
+```
+
+****
+### 7.7 商品上架与下架
+
+当用户点击上架按钮的时候对商品进行上架操作，点击下架按钮的时候对商品进行下架操作。而这些操作主要是修改 product 表中的 status 字段，线上状态：0-初始值，1-上架，-1-自主下架。
+而用户端查看商品时则是查询那些状态为 1 的商品。当然也可以是批量上架下架操作，因此前端可能传递的是商品的 id 集合，但这种批量操作一般只能同时上架或者下架，
+因此只需要传递一个状态值即可。
+
+Controller 层：
+
+```java
+@PutMapping("/updateStatus/{status}")
+@Operation(summary = "上下架商品")
+public Result updateStatus(@RequestBody List<Long> ids, @PathVariable Integer status) {
+    productService.updateStatus(ids, status);
+    return Result.build(null, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+```java
+@Override
+@Transactional
+public void updateStatus(List<Long> ids, Integer status) {
+    List<Product> productList = ids.stream().map(id -> {
+        Product product = new Product();
+        product.setId(id);
+        product.setStatus(status);
+        return product;
+    }).collect(Collectors.toList());
+    updateBatchById(productList);
+}
+```
+
+****
+## 8. 订单统计
+
+用户在前台系统中购买完商品以后会生成对应的订单数据，在后台管理系统中就可以查看到订单数据，在后台管理系统中也可以对订单数据进行统计，
+形成图形化报表【柱状图、饼状图、曲线图、散点图..】用于数据分析。
+
+订单详情表 order_info 结构如下：
+
+| 名称               | 类型      | 长度 | 小数点 | 不是 null | 虚拟 | 键   | 注释                                  |
+| ------------------ | --------- | ---- | ------ | --------- | ---- | ---- | ------------------------------------- |
+| id                 | bigint    |      |        | ✔️        |      | 1    | id                                    |
+| user_id            | bigint    |      |        | ✔️        |      |      | 会员_id                               |
+| nick_name          | varchar   | 200  |        | ❌        |      |      | 昵称                                  |
+| order_no           | char      | 64   |        | ✔️        |      |      | 订单号                                |
+| coupon_id          | bigint    |      |        | ❌        |      |      | 使用的优惠券                          |
+| total_amount       | decimal   | 10   | 2      | ✔️        |      |      | 订单总额                              |
+| coupon_amount      | decimal   | 10   | 2      | ✔️        |      |      | 优惠券                                |
+| original_total_amount | decimal | 10   | 2      | ✔️        |      |      | 原价金额                              |
+| freight_fee        | decimal   | 10   | 2      | ✔️        |      |      | 运费                                  |
+| pay_type           | tinyint   |      |        | ❌        |      |      | 支付方式【1->微信 2->支付宝】|
+| order_status       | tinyint   |      |        | ✔️        |      |      | 订单状态【0->待付款；1->待发货；2->已发货；3->…】 |
+| receiver_name      | varchar   | 100  |        | ❌        |      |      | 收货人姓名                            |
+| receiver_phone     | varchar   | 32   |        | ❌        |      |      | 收货人电话                            |
+| receiver_tag_name  | varchar   | 32   |        | ❌        |      |      | 收货人地址标签                        |
+| receiver_province  | bigint    |      |        | ❌        |      |      | 省份/直辖市                           |
+| receiver_city      | bigint    |      |        | ❌        |      |      | 城市                                  |
+| receiver_district  | bigint    |      |        | ❌        |      |      | 区                                    |
+| receiver_address   | varchar   | 200  |        | ❌        |      |      | 详细地址                              |
+| payment_time       | datetime  |      |        | ❌        |      |      | 支付时间                              |
+| delivery_time      | datetime  |      |        | ❌        |      |      | 发货时间                              |
+| receive_time       | datetime  |      |        | ❌        |      |      | 确认收货时间                          |
+| remark             | varchar   | 500  |        | ❌        |      |      | 订单备注                              |
+| cancel_time        | datetime  |      |        | ❌        |      |      | 取消订单时间                          |
+| cancel_reason      | varchar   | 255  |        | ❌        |      |      | 取消订单原因                          |
+
+其对应的实体类为：
+
+```java
+@Data
+@TableName("order_info")
+@Schema(description = "OrderInfo")
+public class OrderInfo extends BaseEntity {
+
+	private static final long serialVersionUID = 1L;
+
+	@Schema(description = "会员_id")
+	private Long userId;
+
+	@Schema(description = "昵称")
+	private String nickName;
+
+	@Schema(description = "订单号")
+	private String orderNo;
+
+	@Schema(description = "使用的优惠券")
+	private Long couponId;
+
+	@Schema(description = "订单总额")
+	private BigDecimal totalAmount;
+
+	@Schema(description = "优惠券")
+	private BigDecimal couponAmount;
+
+	@Schema(description = "原价金额")
+	private BigDecimal originalTotalAmount;
+
+	@Schema(description = "运费")
+	private BigDecimal feightFee;
+
+	@Schema(description = "支付方式【1->微信】")
+	private Integer payType;
+
+	@Schema(description = "订单状态【0->待付款；1->待发货；2->已发货；3->待用户收货，已完成；-1->已取消】")
+	private Integer orderStatus;
+
+	@Schema(description = "收货人姓名")
+	private String receiverName;
+
+	@Schema(description = "收货人电话")
+	private String receiverPhone;
+
+	@Schema(description = "收货人地址标签")
+	private String receiverTagName;
+
+	@Schema(description = "省份/直辖市")
+	private String receiverProvince;
+
+	@Schema(description = "城市")
+	private String receiverCity;
+
+	@Schema(description = "区")
+	private String receiverDistrict;
+
+	@Schema(description = "详细地址")
+	private String receiverAddress;
+
+	@Schema(description = "支付时间")
+	private Date paymentTime;
+
+	@Schema(description = "发货时间")
+	private Date deliveryTime;
+
+	@Schema(description = "确认收货时间")
+	private Date receiveTime;
+
+	@Schema(description = "订单备注")
+	private String remark;
+
+	@Schema(description = "取消订单时间")
+	private Date cancelTime;
+
+	@Schema(description = "取消订单原因")
+	private String cancelReason;
+
+    @TableField(exist = false)
+	@Schema(description = "订单项列表")
+	private List<OrderItem> orderItemList;
+
+}
+```
+
+****
+### 8.1 每日统计订单总额
+
+统计数据结果表 order_statistics 结构如下：
+
+| 名称          | 类型      | 长度 | 小数点 | 不是 null | 虚拟 | 键   | 注释                        |
+| ------------- | --------- | ---- | ------ | --------- | ---- | ---- | --------------------------- |
+| id            | bigint    |      |        | ✔️        |      | 1    | 省份                        |
+| province_code | varchar   | 20   |        | ❌        |      |      | 订单统计日期                |
+| order_date    | date      |      |        | ❌        |      |      | 总金额                      |
+| total_amount  | decimal   | 10   | 2      | ❌        |      |      | 订单总数                    |
+| total_num     | int       |      |        | ❌        |      |      | 创建时间                    |
+| create_time   | timestamp |      |        | ✔️        |      |      | 更新时间                    |
+| update_time   | timestamp |      |        | ✔️        |      |      | 删除标记 (0:不可用 1:可用) |
+| is_deleted    | tinyint   |      |        | ✔️        |      |      |                             |
+
+对应实体类：
+
+```java
+@Data
+@TableName("order_statistics")
+@Schema(description = "统计数据结果实体类")
+public class OrderStatistics extends BaseEntity {
+
+    @Schema(description = "订单统计日期")
+    private Date orderDate;
+
+    @Schema(description = "统计数据结果实体类")
+    private BigDecimal totalAmount;
+
+    @Schema(description = "统计数据结果实体类")
+    private Integer totalNum;
+    
+}
+```
+
+每日统计订单数据，那么就需要用到定时任务，这里设置为每天的 2:00 统计前一天的订单数据，当然这个定时任务是写在 common 包的，因此想要处理表的数据，就需要用到远程服务。
+而要使用远程服务就要让启动类能够扫描到该远程服务所在的包，但该远程服务是写在 common 模块的，其它的模块该怎么扫描呢？前面记录过，只要引入了 common 模块，
+那么就可以通过设置包名进行扫描，因此可以在 product 服务的启动类上添加 @EnableFeignClients(basePackages = "com.cell")，这样就可以正常使用远程服务了。
+
+```java
+@Autowired
+private OrderStatisticsFeignClient orderStatisticsFeignClient;
+
+/**
+ * 每天 2:00 统计前一天的营业额
+ */
+@Scheduled(cron = "0 0 2 * * ?")
+public void calculateTurnover() throws Exception {
+    // 获取前一天的日期
+    LocalDateTime startTime = LocalDate.now().minusDays(1).atStartOfDay();
+    LocalDateTime endTime = LocalDate.now().minusDays(1).atTime(23, 59, 59);
+    // 格式化时间
+    DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    String startStr = startTime.format(formatter);
+    String endStr = endTime.format(formatter);
+    log.info("开始统计 " + startStr + "~" + endStr + " 的营业额！");
+    orderStatisticsFeignClient.calculateTurnover();
+}
+```
+
+```java
+@Service
+@FeignClient(name = "spzx-product", path = "/orderStatistics")
+public interface OrderStatisticsFeignClient {
+    @PostMapping("/calculateTurnover")
+    @Operation(summary = "统计某天的营业数据")
+    Result calculateTurnover();
+}
+```
+
+Controller 层：
+
+这里的方法是被定时任务触发的，因此前端不需要传递数据，由后端自行计算该方法被调用时的时间。
+
+```java
+@PostMapping("/calculateTurnover")
+@Operation(summary = "统计某天的营业数据")
+public Result calculateTurnover() {
+    orderStatisticsService.calculateTurnover();
+    return Result.build(null, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+而计算每日的订单总额也就是计算订单创建时间在那一天范围内的数据，统计有多少条，并且获取到每条订单的总金额即可。
+
+```java
+/**
+ * 每天 2:00 会统计前一天的营业数据，定时任务会调用该方法
+ */
+@Override
+public void calculateTurnover() {
+    // 获取前一天的日期
+    LocalDateTime startTime = LocalDate.now().minusDays(1).atStartOfDay();
+    LocalDateTime endTime = LocalDate.now().minusDays(1).atTime(23, 59, 59);
+    LambdaQueryWrapper<OrderInfo> orderInfoWrapper = new LambdaQueryWrapper<>();
+    // 查询订单创建日期为昨日的
+    orderInfoWrapper.between(OrderInfo::getCreateTime, startTime, endTime);
+    List<OrderInfo> orderInfoList = orderInfoService.list(orderInfoWrapper);
+    // 计算昨日的所有订单的总金额
+    BigDecimal totalAmount = new BigDecimal("0");
+    for (OrderInfo orderInfo : orderInfoList) {
+        totalAmount = totalAmount.add(orderInfo.getTotalAmount());
+    }
+    OrderStatistics orderStatistics = new OrderStatistics();
+    // 将 LocalDateTime 转换为 Date
+    Date orderDate = Date.from(startTime.atZone(ZoneId.systemDefault()).toInstant());
+    orderStatistics.setOrderDate(orderDate);
+    orderStatistics.setTotalAmount(totalAmount);
+    // 计算昨日订单的总数，即查询出的 orderInfoList 的长度
+    orderStatistics.setTotalNum(orderInfoList.size());
+    // 存入数据到 order_statistics 表
+    save(orderStatistics);
 }
 ```
 

@@ -101,6 +101,7 @@ spzx:
     endpoint-url: http://192.168.149.101:9001
     bucket-name: spzx-bucket
     enabled: true # 加载 Minio 配置文件
+    region: avatars
 
 
 

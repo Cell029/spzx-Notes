@@ -10,9 +10,9 @@ import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
 import org.springframework.cloud.openfeign.EnableFeignClients;
 import org.springframework.session.data.redis.config.annotation.web.http.EnableRedisHttpSession;
 
-@EnableFeignClients
 @EnableDiscoveryClient
 @EnableRedisHttpSession
+@EnableFeignClients(basePackages = "com.cell")
 @MapperScan("com.cell.spzx.auth_server.mapper")
 @SpringBootApplication(scanBasePackages = {"com.cell"})
 public class AuthServerApplication {

@@ -1,6 +1,7 @@
 package com.cell.spzx.product.controller;
 
 import com.cell.model.dto.h5.ProductSpecQueryDto;
+import com.cell.model.entity.product.ProductSpec;
 import com.cell.model.vo.common.Result;
 import com.cell.model.vo.common.ResultCodeEnum;
 import com.cell.model.vo.h5.PageResult;
@@ -9,10 +10,9 @@ import com.cell.spzx.product.service.ProductSpecService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
 
 @RestController
 @RequestMapping("/productSpec")
@@ -27,6 +27,13 @@ public class ProductSpecController {
     public Result listByPage(@RequestBody ProductSpecQueryDto productSpecQueryDto) {
         PageResult<ProductSpecVo> productSpecPageResult = productSpecService.listByPage(productSpecQueryDto);
         return Result.build(productSpecPageResult, ResultCodeEnum.SUCCESS);
+    }
+
+    @GetMapping("findAll")
+    @Operation(summary = "查询所有商品规格参数")
+    public Result findAll() {
+        List<ProductSpec> productSpecList = productSpecService.findAll();
+        return Result.build(productSpecList, ResultCodeEnum.SUCCESS);
     }
 
     @PostMapping("/add")

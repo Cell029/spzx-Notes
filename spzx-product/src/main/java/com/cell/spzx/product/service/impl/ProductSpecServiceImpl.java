@@ -67,4 +67,9 @@ public class ProductSpecServiceImpl extends ServiceImpl<ProductSpecMapper, Produ
         save(productSpec);
     }
 
+    @Override
+    public List<ProductSpec> findAll() {
+        return list();
+    }
+
 }

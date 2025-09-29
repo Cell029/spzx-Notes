@@ -1,5 +1,7 @@
 package com.cell.model.entity.order;
 
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.TableName;
 import com.cell.model.entity.base.BaseEntity;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
@@ -9,6 +11,7 @@ import java.util.Date;
 import java.util.List;
 
 @Data
+@TableName("order_info")
 @Schema(description = "OrderInfo")
 public class OrderInfo extends BaseEntity {
 
@@ -83,6 +86,7 @@ public class OrderInfo extends BaseEntity {
 	@Schema(description = "取消订单原因")
 	private String cancelReason;
 
+    @TableField(exist = false)
 	@Schema(description = "订单项列表")
 	private List<OrderItem> orderItemList;
 
