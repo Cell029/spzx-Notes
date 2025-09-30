@@ -6,6 +6,9 @@ import com.cell.model.entity.product.Brand;
 import com.cell.model.vo.common.Result;
 import com.cell.model.vo.common.ResultCodeEnum;
 import com.cell.model.vo.h5.PageResult;
+import com.cell.spzx.common.log.annotation.Log;
+import com.cell.spzx.common.log.constant.BusinessType;
+import com.cell.spzx.common.log.enums.OperatorType;
 import com.cell.spzx.product.service.BrandService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -39,6 +42,7 @@ public class BrandController {
 
     @PostMapping("/addBrand")
     @Operation(summary = "新增品牌数据")
+    @Log(title = "品牌列表", businessType = BusinessType.POST, operatorType = OperatorType.MANAGE)
     public Result addBrand(@RequestBody BrandDto brandDto) {
         brandService.addBrand(brandDto);
         return Result.build(null, ResultCodeEnum.SUCCESS);

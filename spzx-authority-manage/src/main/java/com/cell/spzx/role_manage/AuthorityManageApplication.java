@@ -12,7 +12,10 @@ import org.springframework.session.data.redis.config.annotation.web.http.EnableR
 @EnableDiscoveryClient
 @EnableRedisHttpSession
 @EnableFeignClients(basePackages = "com.cell")
-@MapperScan("com.cell.spzx.role_manage.mapper")
+@MapperScan({
+        "com.cell.spzx.common.log.mapper", // 扫描 log 的 mapper
+        "com.cell.spzx.role_manage.mapper" // 自己模块的 mapper
+})
 @SpringBootApplication(scanBasePackages = {"com.cell"})
 public class AuthorityManageApplication {
     public static void main(String[] args) {

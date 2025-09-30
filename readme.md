@@ -6797,3 +6797,587 @@ public void calculateTurnover() {
 ```
 
 ****
+### 8.2 查询营业额
+
+查询营业额就是前端选择一段具体的时间，然后后端查询 order_statistics 表对应日期的数据，然后统计这些日期的营业额，当然后端也可以返回有营业额的那些日子。因此，
+需要封装两个对象，一个用来接收前端发送的日期请求参数，一个用来返回展示给前端的数据：
+
+```java
+@Data
+@Schema(description = "搜索营业额条件实体类")
+public class OrderStatisticsDto {
+
+    @Schema(description = "开始时间")
+    private String createTimeBegin;
+
+    @Schema(description = "结束时间")
+    private String createTimeEnd;
+
+}
+```
+
+```java
+@Data
+@Schema(description = "统计结果实体类")
+public class OrderStatisticsVo {
+
+    @Schema(description = "日期数据集合")
+    private List<String> dateList;
+
+    @Schema(description = "总金额数据集合")
+    private List<BigDecimal> amountList;
+    
+}
+```
+
+Controller 层：
+
+```java
+@PostMapping("/getOrderStatistics")
+@Operation(summary = "查询营业额")
+public Result getOrderStatistics(@RequestBody OrderStatisticsDto orderStatisticsDto) {
+    OrderStatisticsVo orderStatisticsVo = orderStatisticsService.getOrderStatistics(orderStatisticsDto);
+    return Result.build(orderStatisticsVo, ResultCodeEnum.SUCCESS);
+}
+```
+
+Service 层：
+
+因为前端传递的时间数据是字符串类型，那么后端就需要把这些字符串转换为存入数据库时的那个时间类型，接着把它们作为查询参数构建 LambdaQueryWrapper。
+当起始日期为空时，则是查找截止日期前的所有营业额数据；当截止日期为空时，则是查找起始日期到最新日期的所有营业额数据；如果没设置日期，那么就是查找所有营业额数据。
+从数据库中获取到数据后，即可对 OrderStatisticsVo 实体类进行封装，查询这些订单数据的日期和营业总额，封装成列表，最终返回。
+
+```java
+@Override
+public OrderStatisticsVo getOrderStatistics(OrderStatisticsDto orderStatisticsDto) {
+    String createTimeBegin = orderStatisticsDto.getCreateTimeBegin();
+    String createTimeEnd = orderStatisticsDto.getCreateTimeEnd();
+    // 将字符串转换为 LocalDate 类型
+    DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+    LocalDate startTime = null;
+    LocalDate endTime = null;
+    LambdaQueryWrapper<OrderStatistics> wrapper = new LambdaQueryWrapper<>();
+    if (createTimeBegin != null && !createTimeBegin.isEmpty()) {
+        startTime = LocalDate.parse(createTimeBegin, formatter);
+        // 设置大于等于该时间的条件
+        wrapper.ge(OrderStatistics::getOrderDate, startTime);
+    }
+    if (createTimeEnd != null && !createTimeEnd.isEmpty()) {
+        endTime = LocalDate.parse(createTimeEnd, formatter);
+        // 设置小于该时间的条件
+        wrapper.lt(OrderStatistics::getOrderDate, endTime);
+    }
+    List<OrderStatistics> orderStatisticsList = list(wrapper);
+    // 获取订单日期
+    List<String> dateList = orderStatisticsList.stream().map(orderStatistics -> orderStatistics.getOrderDate().toString()).collect(Collectors.toList());
+    // 获取订单营业额
+    List<BigDecimal> totalAmountList = orderStatisticsList.stream().map(OrderStatistics::getTotalAmount).collect(Collectors.toList());
+    OrderStatisticsVo orderStatisticsVo = new OrderStatisticsVo();
+    orderStatisticsVo.setDateList(dateList);
+    orderStatisticsVo.setAmountList(totalAmountList);
+    return orderStatisticsVo;
+}
+```
+
+测试数据：
+
+```json
+{
+  "createTimeBegin": "2023-07-18",
+  "createTimeEnd": ""
+}
+```
+
+返回结果：
+
+```json
+{
+  "code": 200,
+  "message": "操作成功",
+  "data": {
+    "dateList": [
+      "Tue Jul 18 00:00:00 HKT 2023",
+      "Thu Jul 20 00:00:00 HKT 2023",
+      "Sat Jul 22 00:00:00 HKT 2023",
+      "Wed Jul 26 00:00:00 HKT 2023",
+      "Sun Sep 28 00:00:00 HKT 2025"
+    ],
+    "amountList": [
+      24,
+      100,
+      10,
+      50,
+      500000
+    ]
+  }
+}
+```
+
+****
+# 五、日志管理
+
+1、安全性：操作日志可以记录管理员操作行为，以此来监控和防止管理员滥用权限或进行其他不当操作。如果后台管理系统没有记录操作日志，那么一旦出现不当操作，就无法对其进行追踪和定位，造成不可估量的安全风险。
+
+2、追溯性：操作日志可以帮助管理员及时发现问题，并可以通过日志进行快速定位和处理。例如某个用户投诉自己的订单异常，管理员可以直接通过查询该订单的操作日志，找到问题所在并进行修改或解决。
+
+因此，后台管理系统记录操作日志，对于维护系统的安全稳定性、保障客户数据的完整性和隐私性、提高系统及时响应和处理能力等方面具有重要意义，是保障企业正常运营和客户满意度的重要手段。
+
+记录操作日志的表 sys_oper_log 结构如下所示：
+
+| 名称         | 类型      | 长度 | 小数点 | 不是 null | 虚拟 | 键 | 注释                             |
+| ------------ | --------- | ---- | ------ | --------- | ---- | ---- | -------------------------------- |
+| id           | bigint    |      |        | ✔️        |      | 1    | 日志主键                         |
+| title        | varchar   | 50   |        |           |      |      | 模块标题                         |
+| method       | varchar   | 100  |        |           |      |      | 方法名称                         |
+| request_method | varchar | 10   |        |           |      |      | 请求方式                         |
+| operator_type | varchar  | 20   |        |           |      |      | 操作类别（0其它 1后台用户 2手机端用户） |
+| oper_name    | varchar   | 50   |        |           |      |      | 操作人员                         |
+| oper_url     | varchar   | 255  |        |           |      |      | 请求URL                          |
+| oper_ip      | varchar   | 128  |        |           |      |      | 主机地址                         |
+| oper_param   | varchar   | 2000 |        |           |      |      | 请求参数                         |
+| json_result  | varchar   | 2000 |        |           |      |      | 返回参数                         |
+| status       | int       |      |        |           |      |      | 操作状态（0正常 1异常）|
+| error_msg    | varchar   | 2000 |        |           |      |      | 错误消息                         |
+| create_time  | timestamp |      |        | ✔️        |      |      |                                  |
+| update_time  | timestamp |      |        |           |      |      |                                  |
+| is_deleted   | tinyint   |      |        | ✔️        |      |      | 删除标记 (0:不可用 1:可用)       |
+
+对应实体类：
+
+```java
+@Data
+@TableName("sys_oper_log")
+@Schema(description = "SysOperLog")
+public class SysOperLog extends BaseEntity {
+
+	private static final long serialVersionUID = 1L;
+
+	@Schema(description = "模块标题")
+	private String title;
+
+	@Schema(description = "方法名称")
+	private String method;
+
+	@Schema(description = "请求方式")
+	private String requestMethod;
+
+	private Integer businessType ;			// 业务类型（0其它 1新增 2修改 3删除）
+
+	@Schema(description = "操作类别（0其它 1后台用户 2手机端用户）")
+	private String operatorType;
+
+	@Schema(description = "操作人员")
+	private String operName;
+
+	@Schema(description = "请求URL")
+	private String operUrl;
+
+	@Schema(description = "主机地址")
+	private String operIp;
+
+	@Schema(description = "请求参数")
+	private String operParam;
+
+	@Schema(description = "返回参数")
+	private String jsonResult;
+
+	@Schema(description = "操作状态（0正常 1异常）")
+	private Integer status;
+
+	@Schema(description = "错误消息")
+	private String errorMsg;
+
+}
+```
+
+****
+## 1. 记录日志思路
+
+例如一个原始的做法，在每个接口中都创建一个日志实体类，每次执行完业务操作就把当前操作的日志对象保存进数据库，这种操作虽然可以完成对日志的记录功能，但是需要对每个接口都进行这些代码的扩展，
+就非常的不方便，并且每个接口的记录日志的功能其实大差不差，使用这种方法还会导致代码的重复率很高，复用性太低。
+
+```java
+// 保存品牌的方法
+@PostMapping("save")
+public Result save( @RequestBody Brand brand) {
+    
+    // 创建SysOperLog对象封装操作日志的相关参数
+    SysOperLog sysOperLog = new SysOperLog();
+    sysOperLog.setTitle("品牌管理");
+    sysOperLog.setBusinessType("新增品牌");
+    sysOperLog.setMethod("com.cell.spzx.product.controller.BrandController.save()");
+    ...
+    //执行业务操作
+    brandService.save(brand);
+    Result result = Result.build(null , ResultCodeEnum.SUCCESS);
+    // 将响应结果设置到 SysOperLog 对象中
+    sysOperLog.setJsonResult(JSON.toJsonString(result));
+    // 保存日志数据
+    sysOperLogService.save(sysOperLog);
+    return result;
+}
+```
+
+**AOP 记录日志**
+
+AOP 记录日志的主要优点包括：
+
+1、低侵入性：AOP 记录日志不需要修改原有的业务逻辑代码，只需要新增一个切面即可。
+
+2、统一管理：通过 AOP 记录日志可以将各个模块中需要记录日志的部分进行统一管理，降低了代码重复度，提高了代码可维护性和可扩展性。
+
+3、提升效率：通过引入 AOP 记录日志，可以避免手动编写日志记录代码，减少了开发人员的工作量，提升了开发效率。
+
+4、安全性：通过 AOP 记录日志，可以收集系统的操作日志，帮助管理员及时发现问题并进行调整，从而提高系统的安全性。
+
+**AOP 记录日志的整体思想**：
+
+1、基于自定义注解来确定切入点【优势：可以通过自定义注解携带一些变化的参数，比如模块名称】
+
+2、基于环绕通知来完成日志记录
+
+****
+## 2. 完成记录日志
+
+### 2.1 创建自定义注解
+
+该功能主要是记录对数据的操作，也就是记录增删改操作，而要识别哪些接口是需要进行记录日志的，可以通过自定义一个注解，用它来标记需要添加切入点的接口，该注解中还可以设置一些自定以的属性值，
+在使用时可以手动写上，例如当前接口的模块名称、操作人员类别、业务类型等。
+
+```java
+/**
+ * 自定义操作日志记录注解
+ */
+@Target({ElementType.METHOD})
+@Retention(RetentionPolicy.RUNTIME)
+public @interface Log {
+    // 模块名称
+    String title();
+
+    // 操作人员类别
+    OperatorType operatorType() default OperatorType.MANAGE;
+
+    // 业务类型（新增 修改 删除）
+    String businessType();
+
+    // 是否保存请求的参数
+    boolean isSaveRequestData() default true;
+
+    // 是否保存响应的参数
+    boolean isSaveResponseData() default true;
+}
+```
+
+一般的增删改操作其实都是由管理人员进行的，例如商品的增加或者删除，那么就可以直接写死操作人员为 MANAGE，而购物车这种功能则是由用户操作的，也可以直接写死为 MOBILE。
+
+```java
+/**
+ * 操作人员类别
+ */
+public enum OperatorType {
+    OTHER,		// 其他
+    MANAGE,		// 后台用户
+    MOBILE		// 手机端用户
+}
+```
+
+要想执行增强目标方法，就需要创建一个切面类，接着就是在切面类中添加切面通知类型，这里选择的是环绕通知，也就是在目标方法执行前后都会进行增强。通过调用 joinPoint.proceed() 来执行目标方法，
+因此再调用它之前就可以对目标方法添加一些自定义的逻辑，在目标方法执行后，就可以将相关的操作数据存入数据库了。
+
+```java
+@Aspect
+@Component
+public class LogAspect { // 环绕通知切面类定义
+    @Around(value = "@annotation(sysLog)")
+    public Object doAroundAdvice(ProceedingJoinPoint joinPoint, Log sysLog) {
+        String title = sysLog.title();
+        log.info("LogAspect...doAroundAdvice方法执行了 " + title);
+        System.out.println("LogAspect...doAroundAdvice方法执行了 " + title);
+        Object proceed = null;
+        try {
+            proceed = joinPoint.proceed(); // 执行业务方法
+        } catch (Throwable e) {                        
+            throw new RuntimeException(e);
+        }
+        return proceed ;                            
+    }
+}
+```
+
+当我在一个接口上添加 @Log 后，启动服务进行测试：
+
+```text
+[INFO] com.cell.spzx.common.aspect.LogAspect LogAspect...doAroundAdvice 方法执行了角色添加
+```
+
+****
+### 2.2 保存日志数据
+
+通过表 sys_oper_log 的结构可以看出需要存入的数据有：(1)接口模块、(2)方法所属包名、(3)请求方式、(4)请求路径、(5)操作者 IP、(6)操作人员类型、(7)操作用户名称、
+(8)接口的请求参数、(9)接口返回值、(10)操作状态、(11)错误信息。因此在使用切面类时需要将这些数据封装到 SysOperLog 实体类中，最后保存进数据库。
+
+1) 接口模块
+
+接口模块名也就是在使用 @Log 注解时需要填写的一个数据：String title(); 因此可以直接通过获取到注解后再获取到该值。
+
+2) 方法所属包名
+
+这个数据可以通过反射机制获取到使用 @Log 注解的方法的前面，通过该前面可以获取到该方法，也就可以拿到相关数据了。
+
+3) 请求方式
+
+请求方式则是通过 RequestContextHolder 上下文对象获取当前接收到的 HTTP 请求信息，然后就能从请求头中拿到请求方式、请求路径、IP 地址。
+
+4) 请求路径
+
+5) 操作者 IP
+
+6) 操作人员类型
+
+该数据也是通过获取 @Log 注解中的值获取的。
+
+7) 操作用户名称
+
+在用户登录时后端系统会自动把当前用户的 ID 保存在 session 和 ThreadLocal 中，而只要用户处于登录状态，那么他的后续操作都是一个线程，那么就可以直接通过 ThreadLocal 获取当前用户 ID。
+
+8) 接口的请求参数
+
+接口的请求参数也可以 ProceedingJoinPoint 的 getArgs() 方法来获取到目标方法的参数列表。
+
+9) 接口返回值
+
+接口返回值则必须在目标方法执行完毕后才能设置，切面类执行目标方法后会生成一个返回值，该返回值就是目标方法的返回值，直接拿来用即可。
+
+10) 操作状态
+
+根据目标方法是否正常执行手动选择设置 0 还是 1。
+
+11) 错误信息
+
+错误信息则是看方法执行过程有没有抛出异常，如果有的话那么就存入该异常信息，没有就存入 null。
+
+```java
+public class LogUtil {
+    
+    // 操作执行之前调用
+    public static void beforeHandleLog(Log sysLog, ProceedingJoinPoint joinPoint, SysOperLog sysOperLog) {
+        // 1. 设置操作模块名称
+        sysOperLog.setTitle(sysLog.title());
+        // 2. 设置方法所属包名
+        // 获取目标方法信息
+        MethodSignature methodSignature = (MethodSignature) joinPoint.getSignature() ;
+        Method method = methodSignature.getMethod();
+        sysOperLog.setMethod(method.getDeclaringClass().getName());
+        // 获取当前请求相关数据
+        ServletRequestAttributes requestAttributes = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+        if (requestAttributes != null) {
+            HttpServletRequest request = requestAttributes.getRequest();
+            // 3. 设置请求方式
+            sysOperLog.setRequestMethod(request.getMethod());
+            // 4. 设置请求 URL
+            sysOperLog.setOperUrl(request.getRequestURI());
+            // 5. 设置请求 IP
+            sysOperLog.setOperIp(IpUtil.getIpAddress(request));
+        }
+        // 6. 设置操作人员类别
+        sysOperLog.setOperatorType(sysLog.operatorType().name());
+        // 7. 设置操作人员
+        sysOperLog.setOperName(AuthContextUtil.get() == null ? "" : AuthContextUtil.get().toString());
+        // 8. 设置请求参数
+        if(sysLog.isSaveRequestData()) {
+            String requestMethod = sysOperLog.getRequestMethod();
+            if (HttpMethod.PUT.name().equals(requestMethod) || HttpMethod.POST.name().equals(requestMethod) || HttpMethod.DELETE.name().equals(requestMethod)) {
+                String businessType = sysLog.businessType();
+                if (businessType != null && (businessType.equals("PUT") || businessType.equals("POST") || businessType.equals("DELETE"))) {
+                    String params = Arrays.toString(joinPoint.getArgs());
+                    sysOperLog.setOperParam(params);
+                }
+            }
+        }
+    }
+
+    // 操作执行之后调用
+    public static void afterHandleLog(Log sysLog, Object proceed, SysOperLog sysOperLog, int status, String errorMsg) {
+        if(sysLog.isSaveResponseData()) {
+            // 9. 设置接口的返回结果
+            sysOperLog.setJsonResult(JSON.toJSONString(proceed));
+        }
+        // 10. 设置操作状态
+        sysOperLog.setStatus(status);
+        // 11. 设置错误信息
+        sysOperLog.setErrorMsg(errorMsg);
+    }
+}
+```
+
+在切面类中主要是执行目标方法，根据目标方法的返回值以及是否丢出异常来判断需要存入数据库中的数据是哪些。
+
+```java
+@Aspect
+@Component
+public class LogAspect {
+
+    // 配置 log
+    private static final Logger logger = Logger.getLogger(LogAspect.class.getName());
+
+    @Autowired
+    private SysOperLogService sysOperLogService;
+
+    // 拦截所有类的所有方法中使用了 @Log 注解的方法
+    @Pointcut("execution(* *(..)) && @annotation(com.cell.spzx.common.log.annotation.Log)")
+    public void autoFillPointCut() {
+    }
+
+    @Around("autoFillPointCut()")
+    public Object doAroundAdvice(ProceedingJoinPoint joinPoint) throws Throwable {
+        SysOperLog sysOperLog = new SysOperLog();
+        // 获取到当前被拦截的方法上的 @Log 注解
+        MethodSignature signature = (MethodSignature) joinPoint.getSignature();
+        Log sysLog = signature.getMethod().getAnnotation(Log.class);
+        // 调用 LogUtil 的前置方法
+        LogUtil.beforeHandleLog(sysLog, joinPoint, sysOperLog);
+        Object proceed = null;
+        try {
+            // 执行目标方法
+            proceed = joinPoint.proceed();
+            // 执行业务方法
+            LogUtil.afterHandleLog(sysLog, proceed, sysOperLog, LogStatusConstant.SUCCESS, null);
+            // 构建响应结果参数
+        } catch (Throwable e) {
+            // 业务方法执行产生异常，打印异常信息
+            e.printStackTrace();
+            LogUtil.afterHandleLog(sysLog, proceed, sysOperLog, LogStatusConstant.FAILURE, e.getMessage());
+            throw e;
+        } finally {
+            // 保存日志数据，放在 try-catch 外，确保也能将异常信息添加进数据库
+            sysOperLogService.saveSysOperLog(sysOperLog);
+        }
+        // 返回执行结果
+        return proceed;
+    }
+}
+```
+
+当 SysOperLog 完成封装后，就需要把它存入数据库了，不过当前的切面类是写在 common 模块下的，因此只能在 common 模块下写一个 service 和 mapper，
+利用 MyBatisPlus 来执行插入操作，不过需要使用到异步线程。
+
+```java
+@Async
+@Override
+public void saveSysOperLog(SysOperLog sysOperLog) {
+    save(sysOperLog);
+}
+```
+
+当然该 mapper 需要被启动类扫描到才能被 Spring 纳入管理，因此要在每个模块的启动类上都添加扫描：
+
+```java
+@MapperScan({
+        "com.cell.spzx.common.log.mapper", // 扫描 log 的 mapper
+        "com.cell.spzx.product.mapper" // 自己模块的 mapper
+})
+```
+
+****
+## 3. 事务失效问题
+
+当模拟异常发生时，再次进行测试，但是发现虽然程序抛出了异常，但是新增操作并没有进行回滚，依然将数据添加进了数据库（不是 Log，是测试的那个接口）：
+
+```java
+@Override
+@Transactional
+public void addBrand(BrandDto brandDto) {
+    ...
+    save(brand);
+    int i = 1 / 0;
+}
+```
+
+但不添加 @Log 后就能正常回滚数据了。因为 Spring 的事务控制是通过 aop 进行实现的，在框架底层会存在一个事务切面类，当业务方法产生异常以后，
+事务切面类感知到异常以后事务进行回滚。当系统中存在多个切面类的时候，Spring 框架会按照 @Order 注解的值对切面进行排序，@Order 的值越小优先级越高，
+@Order 的值越大优先级越低。优先级越高的切面类越优先执行，当没有给切面类指定排序值的时候，自定义的切面类的优先级和 aop 切面类的优先级相同，
+那么此时事务切面类的优先级要高于自定义切面类，当在自定义切面类中对异常进行了捕获，没有将异常进行抛出，那么此时事务切面类是感知不到异常的存在，因此事务失效。
+
+```text
+当只有事务切面存在时：
+调用 → [事务切面] → 业务方法执行 → 异常抛出 → 事务切面感知 → 回滚
+当增加了自定义 AOP：
+调用 → [Log 切面] → [事务切面] → 业务方法执行 → 异常抛出 → Log 切面捕获
+```
+
+因此如果在自定义 AOP 中不主动抛出异常的话，那么事务切面会认为业务执行“成功”或是“被框架捕获处理”，导致事务失效或提前提交。所以就需要在自定义切面中将捕获到的异常主动抛出，
+这样才能让事务进行回滚，而对于日志的记录，不管有没有异常，都要让它能够执行新增操作，所以需要把新增操作写在 finally 中。
+
+```java
+try {
+    // 执行目标方法
+    proceed = joinPoint.proceed();
+    // 执行业务方法
+    LogUtil.afterHandleLog(sysLog, proceed, sysOperLog, LogStatusConstant.SUCCESS, null);
+    // 构建响应结果参数
+} catch (Throwable e) {
+    // 业务方法执行产生异常，打印异常信息
+    e.printStackTrace();
+    LogUtil.afterHandleLog(sysLog, proceed, sysOperLog, LogStatusConstant.FAILURE, e.getMessage());
+    throw e;
+} finally {
+    // 保存日志数据，放在 try-catch 外，确保也能将异常信息添加进数据库
+    sysOperLogService.saveSysOperLog(sysOperLog);
+}
+```
+
+****
+# 六、检索服务
+
+## 1. 封装查询参数模型
+
+在商品检索页面，也就是用户端，通常会设置一个搜索框以及一些可以进行勾选的选项。搜索框主要就是用来输入关键字的，然后后台会根据用户输入的关键字进行检索，一般检索的都是商品名称；
+至于其它的可勾选选项，例如品牌、价格等，也可以作为一种查询字段来更细致化的检索商品，当然，也可以选择展示的商品的排序方式。因此给该公共创建了一个接收分页查询请求参数的实体类：
+
+```java
+@Data
+@Schema(description = "")
+public class SearchParamDto extends QueryPageDto {
+
+    @Schema(description = "全局查询关键字")
+    private String keyword;
+
+    @Schema(description = "品牌列表")
+    private List<Long> brandIds;
+
+    @Schema(description = "商品三级分类")
+    private Long category3Id;
+
+    @Schema(description = "价格区间")
+    private String price;
+
+    @Schema(description = "排序字段")
+    private String sort;
+
+}
+```
+
+1) 全局关键字
+
+这个检索条件就是直接把它作为查询数据库的条件即可，可以设置为 sku 的名称（一般都是，因为 sku 的名称是带品牌和规格参数的）。
+
+2) 品牌列表
+
+前端在检索商品的时候也可以指定品牌，当然可以指定多个，因此需要用集合来接收，当查询时只要有 brandId 属于这个集合中的即可。
+
+3) 商品三级分类
+
+在前端检索时通常也会选择某个具体的分类，该条件和品牌一样，但只能选择一个。
+
+4) 价格区间
+
+检索服务的一个常用的检索条件就是价格区间，用户可以根据自己预期的价格挑选合适的商品。这里选择用 String 类型接收，所以需要限制前端传递的数据，
+例如可以让价格区间以 2000_ / 2000_3000 / _3000 的形式来传递，也就是大于等于 2000 / [2000,3000] / 小于等于 3000，后端只需要对该字符串进行分割即可。
+
+5) 排序字段
+
+用户在查询时也可以指定排序，例如常见的以销量排序和价格排序，元素类型依旧设置为了 String，所以也需要限制前端传递的数据，
+例如销量排序，前端可以写为 saleCount_desc / saleCount_asc，也就是销量降序或者升序，后端也需要对该字符串进行分割，判断后面的是 desc 还是 asc，
+以此来决定如何展示数据。但一般会限制用户只能选择一种类型进行排序，也就是按销量或者按价格。
+
+****

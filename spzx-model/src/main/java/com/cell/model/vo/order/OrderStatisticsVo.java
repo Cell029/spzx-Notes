@@ -12,8 +12,8 @@ import java.util.List;
 public class OrderStatisticsVo {
 
     @Schema(description = "日期数据集合")
-    private List<String> dateList ;
+    private List<String> dateList;
 
     @Schema(description = "总金额数据集合")
-    private List<BigDecimal> amountList ;
+    private List<BigDecimal> amountList;
 }

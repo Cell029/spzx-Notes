@@ -13,7 +13,10 @@ import org.springframework.session.data.redis.config.annotation.web.http.EnableR
 @EnableDiscoveryClient
 @EnableRedisHttpSession
 @EnableFeignClients(basePackages = "com.cell")
-@MapperScan("com.cell.spzx.auth_server.mapper")
+@MapperScan({
+        "com.cell.spzx.common.log.mapper", // 扫描 log 的 mapper
+        "com.cell.spzx.auth_server.mapper" // 自己模块的 mapper
+})
 @SpringBootApplication(scanBasePackages = {"com.cell"})
 public class AuthServerApplication {
 

@@ -6,6 +6,6 @@ import com.cell.spzx.product.mapper.OrderInfoMapper;
 import com.cell.spzx.product.service.OrderInfoService;
 import org.springframework.stereotype.Service;
 
-@Service("orderInfoService")
+@Service
 public class OrderInfoServiceImpl extends ServiceImpl<OrderInfoMapper, OrderInfo> implements OrderInfoService {
 }

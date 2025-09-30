@@ -1,10 +1,12 @@
 package com.cell.model.entity.system;
 
+import com.baomidou.mybatisplus.annotation.TableName;
 import com.cell.model.entity.base.BaseEntity;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
 @Data
+@TableName("sys_oper_log")
 @Schema(description = "SysOperLog")
 public class SysOperLog extends BaseEntity {
 

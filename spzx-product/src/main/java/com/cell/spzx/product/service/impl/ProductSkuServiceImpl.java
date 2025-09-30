@@ -6,7 +6,7 @@ import com.cell.spzx.product.mapper.ProductSkuMapper;
 import com.cell.spzx.product.service.ProductSkuService;
 import org.springframework.stereotype.Service;
 
-@Service("productSkuService")
+@Service
 public class ProductSkuServiceImpl extends ServiceImpl<ProductSkuMapper, ProductSku> implements ProductSkuService {
 
 }

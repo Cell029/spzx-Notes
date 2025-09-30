@@ -21,7 +21,7 @@ import java.util.List;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
-@Service("brandService")
+@Service
 public class BrandServiceImpl extends ServiceImpl<BrandMapper, Brand> implements BrandService {
 
     // 配置 log
@@ -42,6 +42,7 @@ public class BrandServiceImpl extends ServiceImpl<BrandMapper, Brand> implements
     }
 
     @Override
+    @Transactional
     public void addBrand(BrandDto brandDto) {
         // 检查传递来的 BrandDto 中是否包含 Logo URL
         String currentLogoUrl = brandDto.getLogo();
@@ -54,6 +55,7 @@ public class BrandServiceImpl extends ServiceImpl<BrandMapper, Brand> implements
         Brand brand = new Brand();
         BeanUtils.copyProperties(brandDto, brand);
         save(brand);
+        int i = 1 / 0;
     }
 
     @Override
